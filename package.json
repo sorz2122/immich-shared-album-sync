@@ -1,0 +1,19 @@
+{
+  "name": "immich-album-sync",
+  "version": "1.0.0",
+  "description": "Importiert ein per Share-Link geteiltes Immich-Album in die eigene Immich-Instanz.",
+  "license": "MIT",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0"
+  }
+}

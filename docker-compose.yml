@@ -1,0 +1,24 @@
+services:
+  immich-album-sync:
+    build: .
+    image: immich-album-sync:latest
+    container_name: immich-album-sync
+    restart: unless-stopped
+    ports:
+      - "3050:3050"
+    environment:
+      # Basis-URL deiner EIGENEN Immich-Instanz, ohne abschließenden Slash
+      OWN_IMMICH_URL: "https://immich.meinserver.de"
+      # Zugangsdaten für den Login-Dialog dieses Tools
+      APP_USERNAME: "admin"
+      APP_PASSWORD: "password"
+      # Schlüssel zum Verschlüsseln des in den Einstellungen eingetragenen
+      # Immich API-Keys. Erzeugen mit: openssl rand -hex 32
+      SETTINGS_ENCRYPTION_KEY: "hier-64-hex-zeichen-eintragen"
+      PORT: "3050"
+    volumes:
+      # Persistiert die lokale Album-Zuordnung (data/album-mappings.json)
+      # über Container-Neustarts hinweg. Auf TrueNAS auf einen eigenen
+      # Datensatz zeigen lassen, z.B.:
+      #   /mnt/<pool>/appdata/immich-album-sync/data:/app/data
+      - ./data:/app/data
