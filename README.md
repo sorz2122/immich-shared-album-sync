@@ -229,3 +229,10 @@ The Immich logo (`public/immich-logo.svg`) is the property of the
 [Immich](https://github.com/immich-app/immich) project, used here only to
 identify compatibility. This is an unofficial, community-built tool and is
 not affiliated with or endorsed by the Immich project.
+
+## ☕ Unterstützung
+
+https://buymeacoffee.com/sorz2122
+
+<img src="https://github.com/user-attachments/assets/87d5d62f-ba5c-4a7e-a4b8-4cf1fd3018af" width="400"/>
+<br/>
