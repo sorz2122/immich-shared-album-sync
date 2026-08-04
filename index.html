@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Immich Album Sync</title>
+<link rel="icon" href="/immich-logo.svg" />
+<style>
+  :root {
+    --immich-red: #fa2921;
+    --immich-pink: #ed79b5;
+    --immich-yellow: #ffb400;
+    --immich-blue: #1e83f7;
+    --immich-green: #18c249;
+
+    --bg: #08090c;
+    --panel: rgba(255, 255, 255, 0.045);
+    --panel-border: rgba(255, 255, 255, 0.09);
+    --text: #eef0f4;
+    --muted: #8b93a3;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 40px 16px 60px;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* Weiche Farbflecken im Hintergrund, angelehnt an die Immich-Blütenfarben */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -20%;
+    z-index: 0;
+    background:
+      radial-gradient(circle at 15% 20%, rgba(250, 41, 33, 0.16), transparent 35%),
+      radial-gradient(circle at 85% 15%, rgba(255, 180, 0, 0.14), transparent 35%),
+      radial-gradient(circle at 20% 85%, rgba(30, 131, 247, 0.16), transparent 35%),
+      radial-gradient(circle at 85% 80%, rgba(24, 194, 73, 0.14), transparent 35%),
+      radial-gradient(circle at 50% 50%, rgba(237, 121, 181, 0.08), transparent 45%);
+    filter: blur(60px);
+    pointer-events: none;
+  }
+
+  main { width: 100%; max-width: 620px; position: relative; z-index: 1; }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 4px;
+  }
+  .brand-left { display: flex; align-items: center; gap: 14px; }
+  .brand img {
+    width: 42px;
+    height: 42px;
+    filter: drop-shadow(0 4px 18px rgba(250, 41, 33, 0.25));
+  }
+  .gear-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--panel-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--muted);
+    transition: background 0.15s, color 0.15s, transform 0.15s;
+    flex-shrink: 0;
+    padding: 0;
+  }
+  .gear-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); transform: rotate(25deg); }
+  .gear-btn svg { width: 19px; height: 19px; }
+  h1 {
+    font-size: 1.5rem;
+    margin: 0;
+    background: linear-gradient(90deg, var(--immich-red), var(--immich-pink) 35%, var(--immich-blue) 70%, var(--immich-green));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  p.sub { color: var(--muted); margin: 6px 0 0 56px; font-size: 0.92rem; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 18px;
+    padding: 26px;
+    margin-top: 28px;
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  }
+
+  label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    margin-bottom: 18px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input::placeholder { color: #565d6b; }
+  input:focus {
+    outline: none;
+    border-color: var(--immich-blue);
+    box-shadow: 0 0 0 3px rgba(30, 131, 247, 0.2);
+  }
+
+  /* Segmented Control für den Import-Modus */
+  .mode-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 5px;
+    margin-bottom: 20px;
+  }
+  .mode-group input { position: absolute; opacity: 0; pointer-events: none; }
+  .mode-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    text-align: center;
+    padding: 10px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+  }
+  .mode-option .desc { font-size: 0.72rem; font-weight: 400; color: #6b7280; }
+  .mode-group input:checked + .mode-option {
+    background: linear-gradient(135deg, rgba(30, 131, 247, 0.22), rgba(24, 194, 73, 0.18));
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px rgba(30, 131, 247, 0.4);
+  }
+  .mode-group input:checked + .mode-option .desc { color: #c7d2e0; }
+
+  button {
+    background: linear-gradient(135deg, var(--immich-red), var(--immich-pink) 45%, var(--immich-blue) 100%);
+    color: white;
+    border: none;
+    padding: 13px 18px;
+    border-radius: 12px;
+    font-size: 0.97rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    box-shadow: 0 10px 25px rgba(237, 121, 181, 0.25);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s;
+  }
+  button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 14px 32px rgba(237, 121, 181, 0.35); }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+  #log {
+    margin-top: 18px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    max-height: 340px;
+    overflow-y: auto;
+    display: none;
+  }
+  #log div { white-space: pre-wrap; }
+  #log .ok { color: var(--immich-green); }
+  #log .dup { color: var(--immich-yellow); }
+  #log .err { color: var(--immich-red); }
+  #log .muted { color: var(--muted); }
+
+  .status {
+    margin-top: 14px;
+    display: none;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  .status.ok { background: rgba(24, 194, 73, 0.12); color: #5fe3a0; border: 1px solid rgba(24, 194, 73, 0.3); }
+  .status.err { background: rgba(250, 41, 33, 0.1); color: #ff8f88; border: 1px solid rgba(250, 41, 33, 0.3); }
+
+  .settings-panel { margin-top: 14px; display: none; }
+  .settings-panel .hint { font-size: 0.78rem; color: var(--muted); margin: -10px 0 16px; }
+  .settings-status {
+    margin-top: 4px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    min-height: 1.2em;
+  }
+  .settings-status.ok { color: #5fe3a0; }
+  .settings-status.warn { color: var(--immich-yellow); }
+  .settings-status.err { color: #ff8f88; }
+
+  .import-hint {
+    display: none;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 180, 0, 0.1);
+    border: 1px solid rgba(255, 180, 0, 0.3);
+    color: #ffd27a;
+    font-size: 0.82rem;
+  }
+
+  footer {
+    text-align: center;
+    color: #4b515e;
+    font-size: 0.75rem;
+    margin-top: 22px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <div class="brand-left">
+      <img src="/immich-logo.svg" alt="Immich" />
+      <h1>Immich Album Sync</h1>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button type="button" class="gear-btn" id="langBtn" title="Language" aria-label="Language" style="border-radius: 10px; width: auto; padding: 0 12px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.03em;">EN</button>
+      <button type="button" class="gear-btn" id="gearBtn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <p class="sub" id="subtitle">Geteilten Immich-Album-Link eines Freundes in deine eigene Bibliothek importieren.</p>
+
+  <div class="panel settings-panel" id="settingsPanel">
+    <label for="apiKeyInput" id="apiKeyLabel">Dein Immich API-Key (für deine eigene Instanz)</label>
+    <input type="password" id="apiKeyInput" placeholder="API-Key einfügen" autocomplete="off" />
+    <p class="hint" id="apiKeyHint">Wird beim Speichern gegen deine Immich-Instanz geprüft und verschlüsselt abgelegt – nie im Klartext sichtbar, auch nicht nach dem Speichern.</p>
+    <button type="button" id="saveKeyBtn">Speichern &amp; prüfen</button>
+    <div id="settingsStatus" class="settings-status"></div>
+  </div>
+
+  <div class="panel">
+    <div class="import-hint" id="importHint">
+      ⚠️ Noch kein API-Key hinterlegt. Bitte oben über das ⚙ Einstellungen-Symbol eintragen.
+    </div>
+    <form id="syncForm">
+      <label for="shareUrl" id="shareUrlLabel">Share-Link</label>
+      <input type="text" id="shareUrl" placeholder="https://immich.beispiel.de/share/..." required />
+
+      <label for="password" id="passwordLabel">Passwort (nur falls das Album passwortgeschützt ist)</label>
+      <input type="password" id="password" placeholder="optional" />
+
+      <label id="modeLabel">Import-Art</label>
+      <div class="mode-group">
+        <input type="radio" name="mode" id="modeAlbum" value="album" checked />
+        <label for="modeAlbum" class="mode-option">
+          <span id="modeAlbumTitle">🖼️ Album übernehmen</span>
+          <span class="desc" id="modeAlbumDesc">Album mit Originaltitel wird angelegt, Fotos wandern rein</span>
+        </label>
+
+        <input type="radio" name="mode" id="modePhotos" value="photosOnly" />
+        <label for="modePhotos" class="mode-option">
+          <span id="modePhotosTitle">📷 Nur Fotos</span>
+          <span class="desc" id="modePhotosDesc">Alle Fotos direkt in die Bibliothek, ohne Album</span>
+        </label>
+      </div>
+
+      <button type="submit" id="submitBtn" disabled>Import starten</button>
+    </form>
+
+    <div id="log"></div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <footer id="footer">Läuft ausschließlich zwischen deiner und der fremden Immich-Instanz · kein Drittserver beteiligt</footer>
+</main>
+
+<script>
+  const translations = {
+    de: {
+      subtitle: 'Geteilten Immich-Album-Link eines Freundes in deine eigene Bibliothek importieren.',
+      apiKeyLabel: 'Dein Immich API-Key (für deine eigene Instanz)',
+      apiKeyPlaceholder: 'API-Key einfügen',
+      apiKeyPlaceholderSet: '•••••••••• (hinterlegt – zum Ändern neuen Key eingeben)',
+      apiKeyHint: 'Wird beim Speichern gegen deine Immich-Instanz geprüft und verschlüsselt abgelegt – nie im Klartext sichtbar, auch nicht nach dem Speichern.',
+      saveKeyBtn: 'Speichern & prüfen',
+      saveKeyBtnBusy: 'Prüfe...',
+      importHint: '⚠️ Noch kein API-Key hinterlegt. Bitte oben über das ⚙ Einstellungen-Symbol eintragen.',
+      shareUrlLabel: 'Share-Link',
+      passwordLabel: 'Passwort (nur falls das Album passwortgeschützt ist)',
+      modeLabel: 'Import-Art',
+      modeAlbumTitle: '🖼️ Album übernehmen',
+      modeAlbumDesc: 'Album mit Originaltitel wird angelegt, Fotos wandern rein',
+      modePhotosTitle: '📷 Nur Fotos',
+      modePhotosDesc: 'Alle Fotos direkt in die Bibliothek, ohne Album',
+      submitBtn: 'Import starten',
+      submitBtnBusy: 'Importiere...',
+      footer: 'Läuft ausschließlich zwischen deiner und der fremden Immich-Instanz · kein Drittserver beteiligt',
+      savedOk: '✓ Gespeichert',
+      savedOkAs: (name) => `✓ Gespeichert – verbunden als ${name}`,
+      errorPrefix: 'Fehler: ',
+      doneStatus: (c, d, f) => `Fertig: ${c} neu, ${d} bereits vorhanden, ${f} fehlgeschlagen.`,
+      toggleTo: 'EN',
+    },
+    en: {
+      subtitle: "Import a friend's shared Immich album link into your own library.",
+      apiKeyLabel: 'Your Immich API key (for your own instance)',
+      apiKeyPlaceholder: 'Paste API key',
+      apiKeyPlaceholderSet: '•••••••••• (saved – enter a new key to change it)',
+      apiKeyHint: 'Verified against your Immich instance on save, then stored encrypted — never shown in plain text again, even after saving.',
+      saveKeyBtn: 'Save & verify',
+      saveKeyBtnBusy: 'Checking...',
+      importHint: '⚠️ No API key set yet. Please add one via the ⚙ settings icon above.',
+      shareUrlLabel: 'Share link',
+      passwordLabel: 'Password (only if the album is password-protected)',
+      modeLabel: 'Import mode',
+      modeAlbumTitle: '🖼️ Import as album',
+      modeAlbumDesc: 'Creates an album with the original title and adds the photos to it',
+      modePhotosTitle: '📷 Photos only',
+      modePhotosDesc: 'All photos go straight into your library, no album',
+      submitBtn: 'Start import',
+      submitBtnBusy: 'Importing...',
+      footer: "Runs only between your instance and the friend's Immich instance · no third-party server involved",
+      savedOk: '✓ Saved',
+      savedOkAs: (name) => `✓ Saved – connected as ${name}`,
+      errorPrefix: 'Error: ',
+      doneStatus: (c, d, f) => `Done: ${c} new, ${d} already existed, ${f} failed.`,
+      toggleTo: 'DE',
+    },
+  };
+
+  let lang = localStorage.getItem('immichSyncLang') === 'en' ? 'en' : 'de';
+
+  function applyLanguage() {
+    const tr = translations[lang];
+    document.documentElement.lang = lang;
+    document.getElementById('subtitle').textContent = tr.subtitle;
+    document.getElementById('apiKeyLabel').textContent = tr.apiKeyLabel;
+    document.getElementById('apiKeyHint').textContent = tr.apiKeyHint;
+    document.getElementById('saveKeyBtn').textContent = tr.saveKeyBtn;
+    document.getElementById('importHint').textContent = tr.importHint;
+    document.getElementById('shareUrlLabel').textContent = tr.shareUrlLabel;
+    document.getElementById('passwordLabel').textContent = tr.passwordLabel;
+    document.getElementById('modeLabel').textContent = tr.modeLabel;
+    document.getElementById('modeAlbumTitle').textContent = tr.modeAlbumTitle;
+    document.getElementById('modeAlbumDesc').textContent = tr.modeAlbumDesc;
+    document.getElementById('modePhotosTitle').textContent = tr.modePhotosTitle;
+    document.getElementById('modePhotosDesc').textContent = tr.modePhotosDesc;
+    document.getElementById('submitBtn').textContent = tr.submitBtn;
+    document.getElementById('footer').textContent = tr.footer;
+    document.getElementById('langBtn').textContent = tr.toggleTo;
+    apiKeyInput.placeholder = apiKeyInput.dataset.set === 'true' ? tr.apiKeyPlaceholderSet : tr.apiKeyPlaceholder;
+  }
+
+  const form = document.getElementById('syncForm');
+  const logEl = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const submitBtn = document.getElementById('submitBtn');
+
+  const gearBtn = document.getElementById('gearBtn');
+  const langBtn = document.getElementById('langBtn');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const saveKeyBtn = document.getElementById('saveKeyBtn');
+  const settingsStatus = document.getElementById('settingsStatus');
+  const importHint = document.getElementById('importHint');
+
+  langBtn.addEventListener('click', () => {
+    lang = lang === 'de' ? 'en' : 'de';
+    localStorage.setItem('immichSyncLang', lang);
+    applyLanguage();
+  });
+
+  gearBtn.addEventListener('click', () => {
+    settingsPanel.style.display = settingsPanel.style.display === 'block' ? 'none' : 'block';
+  });
+
+  async function refreshSettingsStatus() {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      apiKeyInput.dataset.set = data.apiKeySet ? 'true' : 'false';
+      if (data.apiKeySet) {
+        submitBtn.disabled = false;
+        importHint.style.display = 'none';
+      } else {
+        submitBtn.disabled = true;
+        importHint.style.display = 'block';
+        settingsPanel.style.display = 'block';
+      }
+      applyLanguage();
+    } catch {
+      // Server-side check on /api/sync covers this if the status can't be loaded here.
+    }
+  }
+
+  saveKeyBtn.addEventListener('click', async () => {
+    const value = apiKeyInput.value.trim();
+    if (!value) return;
+    const tr = translations[lang];
+    saveKeyBtn.disabled = true;
+    saveKeyBtn.textContent = tr.saveKeyBtnBusy;
+    settingsStatus.className = 'settings-status';
+    settingsStatus.textContent = '';
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: value, lang }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+
+      apiKeyInput.value = '';
+      apiKeyInput.dataset.set = 'true';
+      apiKeyInput.placeholder = tr.apiKeyPlaceholderSet;
+      settingsStatus.className = 'settings-status ok';
+      settingsStatus.textContent = data.connectedAs ? tr.savedOkAs(data.connectedAs) : tr.savedOk;
+      submitBtn.disabled = false;
+      importHint.style.display = 'none';
+    } catch (err) {
+      settingsStatus.className = 'settings-status err';
+      settingsStatus.textContent = tr.errorPrefix + err.message;
+    } finally {
+      saveKeyBtn.disabled = false;
+      saveKeyBtn.textContent = tr.saveKeyBtn;
+    }
+  });
+
+  applyLanguage();
+  refreshSettingsStatus();
+
+  function appendLog(line) {
+    logEl.style.display = 'block';
+    const div = document.createElement('div');
+    if (line.includes('✓')) div.className = 'ok';
+    else if (line.includes('↺') || line.includes('⚠️')) div.className = 'dup';
+    else if (line.includes('✗')) div.className = 'err';
+    else div.className = 'muted';
+    div.textContent = line;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const tr = translations[lang];
+    logEl.innerHTML = '';
+    statusEl.style.display = 'none';
+    submitBtn.disabled = true;
+    submitBtn.textContent = tr.submitBtnBusy;
+
+    const shareUrl = document.getElementById('shareUrl').value.trim();
+    const password = document.getElementById('password').value;
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+
+    try {
+      const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shareUrl, password: password || undefined, mode, lang }),
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const evt = JSON.parse(line);
+          if (evt.type === 'log') appendLog(evt.message);
+          if (evt.type === 'done') {
+            statusEl.className = 'status ok';
+            statusEl.style.display = 'block';
+            statusEl.textContent = tr.doneStatus(evt.created ?? 0, evt.duplicates ?? 0, evt.failed ?? 0);
+          }
+          if (evt.type === 'error') {
+            statusEl.className = 'status err';
+            statusEl.style.display = 'block';
+            statusEl.textContent = tr.errorPrefix + evt.message;
+          }
+        }
+      }
+    } catch (err) {
+      statusEl.className = 'status err';
+      statusEl.style.display = 'block';
+      statusEl.textContent = tr.errorPrefix + err.message;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = tr.submitBtn;
+    }
+  });
+</script>
+</body>
+</html>
