@@ -1,4 +1,5 @@
 # Immich Album Sync
+<img width="783" height="733" alt="image" src="https://github.com/user-attachments/assets/9dd2d1b7-b315-4454-a822-2acae56d5081" />
 
 🇩🇪 [Deutsche Version](README.de.md)
 
