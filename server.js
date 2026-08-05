@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import multer from 'multer';
+import AdmZip from 'adm-zip';
+import exifr from 'exifr';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import fs from 'node:fs/promises';
@@ -130,6 +133,17 @@ const STRINGS = {
     albumUpdateError: (s) => `Album aktualisieren fehlgeschlagen (HTTP ${s}).`,
     invalidKey: 'Bitte einen gültigen API-Key eingeben.',
     keyRejected: (s) => `Immich hat den Key abgelehnt (HTTP ${s}). Bitte prüfen.`,
+    googleDetected: 'Google-Fotos-Link erkannt (experimentell).',
+    googleScrapeFailed: (m) => `Automatischer Import fehlgeschlagen: ${m}`,
+    googleScrapeSuggestZip:
+      'Automatischer Google-Fotos-Import ist aktuell nicht zuverlässig möglich (Google hat den Zugriff eingeschränkt). ' +
+      'Bitte stattdessen auf der geteilten Seite "Alle herunterladen" nutzen und die ZIP-Datei über den Reiter "Google-Fotos-ZIP" hochladen.',
+    defaultGoogleAlbumName: 'Google-Fotos-Album',
+    noZipFile: 'Bitte eine ZIP-Datei auswählen.',
+    noAlbumName: 'Bitte einen Albumnamen eingeben.',
+    readingZip: 'Lese ZIP-Datei...',
+    zipEntriesFound: (n) => `-> ${n} Foto(s)/Video(s) in der ZIP gefunden.`,
+    defaultZipAlbumName: 'Importiertes Album',
   },
   en: {
     connecting: (url) => `Connecting to ${url} ...`,
@@ -160,6 +174,17 @@ const STRINGS = {
     albumUpdateError: (s) => `Failed to update album (HTTP ${s}).`,
     invalidKey: 'Please enter a valid API key.',
     keyRejected: (s) => `Immich rejected the key (HTTP ${s}). Please check it.`,
+    googleDetected: 'Google Photos link detected (experimental).',
+    googleScrapeFailed: (m) => `Automatic import failed: ${m}`,
+    googleScrapeSuggestZip:
+      "Automatic Google Photos import isn't reliably possible right now (Google has restricted access). " +
+      'Please use "Download all" on the shared page instead and upload the resulting ZIP via the "Google Photos ZIP" tab.',
+    defaultGoogleAlbumName: 'Google Photos album',
+    noZipFile: 'Please select a ZIP file.',
+    noAlbumName: 'Please enter an album name.',
+    readingZip: 'Reading ZIP file...',
+    zipEntriesFound: (n) => `-> Found ${n} photo(s)/video(s) in the ZIP.`,
+    defaultZipAlbumName: 'Imported album',
   },
 };
 
@@ -189,13 +214,66 @@ function isBlockedHost(hostname) {
   return false;
 }
 
-function parseShareUrl(shareUrl, lang) {
-  const u = new URL(shareUrl);
+function assertSafeUrl(urlString, lang) {
+  const u = new URL(urlString);
   if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error(t(lang, 'onlyHttp'));
   if (isBlockedHost(u.hostname)) throw new Error(t(lang, 'localBlocked'));
+  return u;
+}
+
+function parseShareUrl(shareUrl, lang) {
+  const u = assertSafeUrl(shareUrl, lang);
   const token = u.pathname.split('/').filter(Boolean).pop();
   if (!token) throw new Error(t(lang, 'noShareKey'));
   return { baseUrl: `${u.protocol}//${u.host}`, token };
+}
+
+/** 'google' for Google Photos share links, 'immich' for everything else
+ * (validated as an Immich share link further down the line anyway). */
+function detectSource(shareUrl) {
+  let hostname;
+  try {
+    hostname = new URL(shareUrl).hostname.toLowerCase();
+  } catch {
+    return 'immich';
+  }
+  if (hostname === 'photos.google.com' || hostname.endsWith('.photos.google.com')) return 'google';
+  if (hostname === 'photos.app.goo.gl' || hostname === 'goo.gl') return 'google';
+  return 'immich';
+}
+
+// ---------- media file helpers (shared by ZIP import & Google scraping) ----------
+
+const MIME_TYPES = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  webp: 'image/webp',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  avi: 'video/x-msvideo',
+  mkv: 'video/x-matroska',
+  m4v: 'video/x-m4v',
+};
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'm4v']);
+
+function isMediaFile(name) {
+  const ext = path.extname(name).slice(1).toLowerCase();
+  return Object.prototype.hasOwnProperty.call(MIME_TYPES, ext);
+}
+
+async function tryGetExifDate(buffer) {
+  try {
+    const data = await exifr.parse(buffer, { pick: ['DateTimeOriginal', 'CreateDate'] });
+    const d = data?.DateTimeOriginal || data?.CreateDate;
+    if (d instanceof Date && !isNaN(d)) return d.toISOString();
+  } catch {
+    // Not every file has readable EXIF (e.g. videos, screenshots) - that's fine.
+  }
+  return null;
 }
 
 // ---------- local JSON stores ----------
@@ -404,6 +482,116 @@ async function addAssetsToOwnAlbum(albumId, assetIds) {
   });
 }
 
+/**
+ * Shared upload+album logic used by the Immich-share, Google-scrape and
+ * ZIP-import flows alike. `downloadFn(asset)` must resolve to
+ * `{ buffer, filename }` (filename may be null to keep the asset's own).
+ */
+async function importAssets({ assets, downloadFn, albumName, importMode, mapKey, lang, log, send }) {
+  const mappings = importMode === 'album' ? await readMappings() : null;
+  let ownAlbumId = mappings?.[mapKey]?.ownAlbumId || null;
+
+  const targetAssetIds = [];
+  let created = 0;
+  let duplicates = 0;
+  let failed = 0;
+
+  for (const asset of assets) {
+    try {
+      log(t(lang, 'downloading', String(asset.id).slice(0, 8)));
+      const downloaded = await downloadFn(asset);
+      if (downloaded.filename) {
+        asset.originalFileName = downloaded.filename;
+        log(t(lang, 'actualFilename', downloaded.filename));
+      }
+      const result = await uploadToOwnImmich(downloaded.buffer, asset, lang);
+      targetAssetIds.push(result.id);
+      if (result.created) {
+        created++;
+        log(t(lang, 'uploaded'));
+      } else {
+        duplicates++;
+        log(t(lang, 'duplicate'));
+      }
+    } catch (err) {
+      failed++;
+      log(t(lang, 'assetError', asset.id, err.message));
+    }
+  }
+
+  if (targetAssetIds.length === 0) {
+    send({ type: 'done', created, duplicates, failed });
+    return;
+  }
+  if (importMode === 'photosOnly') {
+    log(t(lang, 'done', created, duplicates, failed));
+    send({ type: 'done', mode: 'photosOnly', created, duplicates, failed });
+    return;
+  }
+
+  if (ownAlbumId) {
+    const putRes = await addAssetsToOwnAlbum(ownAlbumId, targetAssetIds);
+    if (putRes.status === 404) ownAlbumId = null;
+    else if (!putRes.ok) throw new Error(t(lang, 'albumUpdateError', putRes.status));
+  }
+  if (!ownAlbumId) {
+    ownAlbumId = (await createOwnAlbum(albumName, targetAssetIds, lang)).id;
+  }
+
+  mappings[mapKey] = { ownAlbumId, albumName, lastSync: new Date().toISOString() };
+  await writeMappings(mappings);
+
+  log(t(lang, 'done', created, duplicates, failed));
+  send({ type: 'done', albumId: ownAlbumId, created, duplicates, failed });
+}
+
+// ---------- Google Photos (EXPERIMENTAL) ----------
+//
+// Google locked down the official Photos Library API for shared-album/
+// third-party access in March 2025, and even community scraping tools were
+// reportedly broken again by further changes as of March 2026. This is a
+// best-effort attempt that scrapes the public share page for embedded
+// lh3.googleusercontent.com image URLs. It can stop working at any time
+// without warning - the ZIP-upload flow (/api/import-zip) is the reliable
+// fallback and doesn't depend on any of this.
+
+async function scrapeGooglePhotosAlbum(shareUrl, lang) {
+  const res = await fetch(shareUrl, {
+    redirect: 'follow',
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; immich-album-sync)' },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const html = await res.text();
+
+  let albumName = null;
+  const titleMatch =
+    html.match(/<meta property="og:title" content="([^"]+)"/i) || html.match(/<title>([^<]+)<\/title>/i);
+  if (titleMatch) albumName = titleMatch[1].trim();
+
+  // Google embeds each photo's base image URL as https://lh3.googleusercontent.com/pw/<id>
+  // in the page's inline data. Appending "=d" requests the original file for download.
+  const matches = [...html.matchAll(/https:\/\/lh3\.googleusercontent\.com\/pw\/[A-Za-z0-9_-]+/g)];
+  const uniqueUrls = [...new Set(matches.map((m) => m[0]))];
+  if (uniqueUrls.length === 0) throw new Error('no image URLs found in page');
+
+  const assets = uniqueUrls.map((url, i) => ({
+    id: crypto.createHash('sha1').update(url).digest('hex').slice(0, 16),
+    originalFileName: `google-photo-${i + 1}.jpg`,
+    originalMimeType: 'image/jpeg',
+    isImage: true,
+    fileCreatedAt: null,
+    _sourceUrl: `${url}=d`,
+  }));
+
+  return { albumName, assets };
+}
+
+async function downloadGoogleAsset(asset) {
+  const res = await fetch(asset._sourceUrl);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return { buffer: Buffer.from(await res.arrayBuffer()), filename: null };
+}
+
 // ---------- routes: settings ----------
 
 app.get('/api/settings', async (req, res) => {
@@ -443,6 +631,33 @@ app.post('/api/sync', requireSameOrigin, async (req, res) => {
     const { shareUrl, password, mode } = req.body || {};
     if (!shareUrl) throw new Error(t(lang, 'noShareUrl'));
     const importMode = mode === 'photosOnly' ? 'photosOnly' : 'album';
+
+    assertSafeUrl(shareUrl, lang);
+
+    if (detectSource(shareUrl) === 'google') {
+      log(t(lang, 'googleDetected'));
+      let scraped;
+      try {
+        scraped = await scrapeGooglePhotosAlbum(shareUrl, lang);
+      } catch (err) {
+        log(t(lang, 'googleScrapeFailed', err.message));
+        throw new Error(t(lang, 'googleScrapeSuggestZip'));
+      }
+      const albumName = scraped.albumName || t(lang, 'defaultGoogleAlbumName');
+      log(t(lang, 'albumFound', albumName, scraped.assets.length));
+
+      await importAssets({
+        assets: scraped.assets,
+        downloadFn: downloadGoogleAsset,
+        albumName,
+        importMode,
+        mapKey: `google::${shareUrl}`,
+        lang,
+        log,
+        send,
+      });
+      return res.end();
+    }
 
     const { baseUrl, token } = parseShareUrl(shareUrl, lang);
     log(t(lang, 'connecting', baseUrl));
@@ -515,62 +730,89 @@ app.post('/api/sync', requireSameOrigin, async (req, res) => {
       return res.end();
     }
 
-    const mappings = importMode === 'album' ? await readMappings() : null;
-    const mapId = `${baseUrl}::${token}`;
-    let ownAlbumId = mappings?.[mapId]?.ownAlbumId || null;
+    await importAssets({
+      assets,
+      downloadFn: async (asset) => client.downloadOriginal(asset.id),
+      albumName,
+      importMode,
+      mapKey: `${baseUrl}::${token}`,
+      lang,
+      log,
+      send,
+    });
+    res.end();
+  } catch (err) {
+    send({ type: 'error', message: err.message });
+    res.end();
+  }
+});
 
-    const targetAssetIds = [];
-    let created = 0;
-    let duplicates = 0;
-    let failed = 0;
+// ---------- route: Google Photos ZIP import (reliable fallback) ----------
 
-    for (const asset of assets) {
-      try {
-        log(t(lang, 'downloading', asset.id.slice(0, 8)));
-        const downloaded = await client.downloadOriginal(asset.id);
-        if (downloaded.filename) {
-          asset.originalFileName = downloaded.filename;
-          log(t(lang, 'actualFilename', downloaded.filename));
-        }
-        const result = await uploadToOwnImmich(downloaded.buffer, asset, lang);
-        targetAssetIds.push(result.id);
-        if (result.created) {
-          created++;
-          log(t(lang, 'uploaded'));
-        } else {
-          duplicates++;
-          log(t(lang, 'duplicate'));
-        }
-      } catch (err) {
-        failed++;
-        log(t(lang, 'assetError', asset.id, err.message));
-      }
+const zipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4GB - everything is buffered in memory
+});
+
+app.post('/api/import-zip', requireSameOrigin, zipUpload.single('zipFile'), async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache',
+  });
+  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
+  const lang = resolveLang(req.body);
+  const log = (message) => send({ type: 'log', message });
+
+  try {
+    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
+    if (!req.file) throw new Error(t(lang, 'noZipFile'));
+
+    const importMode = req.body.mode === 'photosOnly' ? 'photosOnly' : 'album';
+    const albumNameInput = (req.body.albumName || '').trim();
+    if (importMode === 'album' && !albumNameInput) throw new Error(t(lang, 'noAlbumName'));
+
+    log(t(lang, 'readingZip'));
+    let zip;
+    try {
+      zip = new AdmZip(req.file.buffer);
+    } catch (err) {
+      throw new Error(`ZIP: ${err.message}`);
     }
+    const entries = zip.getEntries().filter((e) => !e.isDirectory && isMediaFile(e.entryName));
+    log(t(lang, 'zipEntriesFound', entries.length));
 
-    if (targetAssetIds.length === 0) {
-      send({ type: 'done', created, duplicates, failed });
+    if (entries.length === 0) {
+      log(t(lang, 'noAssets'));
+      send({ type: 'done', created: 0, duplicates: 0, failed: 0 });
       return res.end();
     }
-    if (importMode === 'photosOnly') {
-      log(t(lang, 'done', created, duplicates, failed));
-      send({ type: 'done', mode: 'photosOnly', created, duplicates, failed });
-      return res.end();
+
+    const assets = [];
+    for (const entry of entries) {
+      const buffer = entry.getData();
+      const ext = path.extname(entry.entryName).slice(1).toLowerCase();
+      const exifDate = await tryGetExifDate(buffer);
+      const zipDate = entry.header?.time ? new Date(entry.header.time).toISOString() : null;
+      assets.push({
+        id: crypto.createHash('sha1').update(entry.entryName).digest('hex').slice(0, 16),
+        originalFileName: path.basename(entry.entryName),
+        originalMimeType: MIME_TYPES[ext] || 'application/octet-stream',
+        isImage: !VIDEO_EXTENSIONS.has(ext),
+        fileCreatedAt: exifDate || zipDate,
+        _buffer: buffer,
+      });
     }
 
-    if (ownAlbumId) {
-      const putRes = await addAssetsToOwnAlbum(ownAlbumId, targetAssetIds);
-      if (putRes.status === 404) ownAlbumId = null;
-      else if (!putRes.ok) throw new Error(t(lang, 'albumUpdateError', putRes.status));
-    }
-    if (!ownAlbumId) {
-      ownAlbumId = (await createOwnAlbum(albumName, targetAssetIds, lang)).id;
-    }
-
-    mappings[mapId] = { ownAlbumId, albumName, lastSync: new Date().toISOString() };
-    await writeMappings(mappings);
-
-    log(t(lang, 'done', created, duplicates, failed));
-    send({ type: 'done', albumId: ownAlbumId, created, duplicates, failed });
+    await importAssets({
+      assets,
+      downloadFn: async (asset) => ({ buffer: asset._buffer, filename: null }),
+      albumName: albumNameInput || t(lang, 'defaultZipAlbumName'),
+      importMode,
+      mapKey: `zip::${albumNameInput.toLowerCase() || 'unnamed'}`,
+      lang,
+      log,
+      send,
+    });
     res.end();
   } catch (err) {
     send({ type: 'error', message: err.message });

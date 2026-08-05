@@ -18,6 +18,8 @@ tool bridges that gap using only the public share link.
 ## Features
 
 - 🔗 Paste a share link, done — no API key needed from the person sharing it
+- 🔍 **Auto-detects the source**: an Immich share link and a Google Photos
+  share link are handled automatically, no need to tell it which is which
 - 🖼️ **Import as album** — recreates the album with its original title on
   your instance and files new photos into it, or **📷 photos only** — imports
   everything straight into your library, no album
@@ -31,6 +33,29 @@ tool bridges that gap using only the public share link.
   SSRF-hardened out of the box — see [Security](#security)
 - 🌐 UI available in German and English (toggle in the top bar)
 - 🐳 Ships with a `Dockerfile` and `docker-compose.yml`
+
+## Importing from Google Photos
+
+Google locked down third-party programmatic access to shared albums in 2025
+(and even the community scraping tools that filled the gap were reportedly
+broken again by further changes in 2026), so "just paste a link" isn't a
+fully reliable option for Google Photos the way it is for Immich. This tool
+offers both of the realistic paths, under the **📦 Google Photos ZIP** tab
+next to the link field:
+
+- **ZIP upload (recommended, robust):** open the shared album in your
+  browser, click Google's own **"Download all"** button, and drop the
+  resulting ZIP file into this tool. It extracts the photos/videos, reads
+  EXIF dates where available (falling back to the file dates preserved in
+  the ZIP), and imports them exactly like an Immich share — as a named
+  album or as loose photos. This doesn't depend on Google's API or page
+  structure at all, so it isn't going to suddenly break.
+- **Automatic scraping (experimental):** if you paste a Google Photos share
+  link into the regular link field, the tool auto-detects it and attempts a
+  best-effort scrape of the public share page for embeddable photo URLs.
+  This can simply stop working at any time without warning if Google
+  changes their page — when it fails, the tool tells you so and points you
+  at the ZIP option above.
 
 ## Requirements
 
@@ -212,6 +237,9 @@ The tool is hardened against unauthorized access out of the box:
   before being uploaded.
 - If the friend deletes the share link or it expires, re-syncing will stop
   working.
+- With the automatic Google Photos scraper, original filenames and capture
+  dates are lost (Google doesn't expose that metadata there) — the ZIP
+  import path preserves both in most cases.
 
 ## Contributing
 
@@ -229,10 +257,3 @@ The Immich logo (`public/immich-logo.svg`) is the property of the
 [Immich](https://github.com/immich-app/immich) project, used here only to
 identify compatibility. This is an unofficial, community-built tool and is
 not affiliated with or endorsed by the Immich project.
-
-## ☕ Unterstützung
-
-https://buymeacoffee.com/sorz2122
-
-<img src="https://github.com/user-attachments/assets/87d5d62f-ba5c-4a7e-a4b8-4cf1fd3018af" width="400"/>
-<br/>

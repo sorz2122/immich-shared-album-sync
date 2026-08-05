@@ -9,6 +9,30 @@ inklusive Nachbau des Albums.
 Funktioniert ohne API-Key des anderen: es wird nur der öffentliche Share-Link
 (optional mit Passwort) benötigt.
 
+## Google Fotos importieren
+
+Google hat 2025 den programmatischen Drittanbieter-Zugriff auf geteilte
+Alben stark eingeschränkt (und laut Berichten sind selbst die
+Community-Ausweichlösungen, die diese Lücke gefüllt haben, durch weitere
+Änderungen 2026 erneut kaputtgegangen). "Einfach Link einfügen" ist bei
+Google Fotos also aktuell kein zuverlässiger Weg, anders als bei Immich.
+Das Tool bietet dir beide realistischen Wege an, unter dem Reiter
+**📦 Google-Fotos-ZIP** neben dem Link-Feld:
+
+- **ZIP-Upload (empfohlen, robust):** Geteiltes Album im Browser öffnen, auf
+  Googles eigenen **"Alle herunterladen"**-Button klicken und die
+  entstandene ZIP-Datei hier reinziehen. Das Tool entpackt Fotos/Videos,
+  liest EXIF-Daten wo vorhanden aus (sonst Fallback auf die in der ZIP
+  gespeicherten Dateidaten) und importiert sie genau wie bei Immich – als
+  benanntes Album oder lose Fotos. Hängt an keiner Stelle von Googles API
+  oder Seitenstruktur ab, kann also nicht plötzlich kaputtgehen.
+- **Automatisches Scraping (experimentell):** Fügst du einen Google-Fotos-
+  Link ins normale Link-Feld ein, erkennt das Tool das automatisch und
+  versucht, die öffentliche Album-Seite nach einbettbaren Foto-URLs zu
+  durchsuchen. Das kann jederzeit ohne Vorwarnung aufhören zu funktionieren,
+  wenn Google die Seite ändert – bei einem Fehlschlag weist dich das Tool
+  direkt auf die ZIP-Option oben hin.
+
 ## Voraussetzungen
 
 - Node.js ≥ 20 (bringt `fetch`, `FormData`, `Blob` nativ mit)
@@ -188,6 +212,9 @@ Das Tool ist jetzt gegen Fremdzugriff abgesichert:
   gepuffert werden, bevor sie hochgeladen werden.
 - Falls der Freund den Share-Link löscht oder das Ablaufdatum erreicht ist,
   funktioniert der erneute Sync nicht mehr.
+- Beim automatischen Google-Fotos-Scraping gehen Originaldateiname und
+  Aufnahmedatum verloren (Google liefert dort keine Metadaten mit) – beim
+  ZIP-Import bleiben beide meist erhalten.
 
 ---
 

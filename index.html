@@ -231,6 +231,79 @@
     font-size: 0.82rem;
   }
 
+  .source-badge {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin: -12px 0 16px;
+    padding: 0 2px;
+  }
+  .source-badge.immich { color: var(--immich-blue); }
+  .source-badge.google { color: var(--immich-yellow); }
+  .source-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+  .google-warning {
+    display: none;
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 180, 0, 0.08);
+    border: 1px solid rgba(255, 180, 0, 0.25);
+    color: #d9be8a;
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+
+  .source-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 5px;
+    margin-bottom: 20px;
+  }
+  .source-tab {
+    text-align: center;
+    padding: 10px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  .source-tab:hover:not(:disabled) { transform: none; box-shadow: none; }
+  .source-tab.active {
+    background: linear-gradient(135deg, rgba(30, 131, 247, 0.22), rgba(24, 194, 73, 0.18));
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px rgba(30, 131, 247, 0.4);
+  }
+
+  .dropzone {
+    border: 2px dashed var(--panel-border);
+    border-radius: 12px;
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    margin-bottom: 18px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: var(--immich-blue);
+    background: rgba(30, 131, 247, 0.06);
+  }
+  .dropzone strong { color: var(--text); }
+  .dropzone .filename { margin-top: 8px; color: var(--immich-green); font-weight: 600; font-size: 0.82rem; }
+
   footer {
     text-align: center;
     color: #4b515e;
@@ -270,9 +343,18 @@
     <div class="import-hint" id="importHint">
       ⚠️ Noch kein API-Key hinterlegt. Bitte oben über das ⚙ Einstellungen-Symbol eintragen.
     </div>
+
+    <div class="source-tabs">
+      <button type="button" class="source-tab active" id="tabLink">🔗 Link</button>
+      <button type="button" class="source-tab" id="tabZip">📦 Google-Fotos-ZIP</button>
+    </div>
+
     <form id="syncForm">
       <label for="shareUrl" id="shareUrlLabel">Share-Link</label>
       <input type="text" id="shareUrl" placeholder="https://immich.beispiel.de/share/..." required />
+      <div class="source-badge" id="sourceBadge"><span class="dot"></span><span id="sourceBadgeText"></span></div>
+
+      <div class="google-warning" id="googleWarning"></div>
 
       <label for="password" id="passwordLabel">Passwort (nur falls das Album passwortgeschützt ist)</label>
       <input type="password" id="password" placeholder="optional" />
@@ -293,6 +375,39 @@
       </div>
 
       <button type="submit" id="submitBtn" disabled>Import starten</button>
+    </form>
+
+    <form id="zipForm" style="display:none;">
+      <p class="hint" id="zipIntro" style="margin-top:0;">Auf der geteilten Google-Fotos-Seite auf "Alle herunterladen" klicken, die entstandene ZIP-Datei hier hochladen.</p>
+
+      <label id="zipModeLabel">Import-Art</label>
+      <div class="mode-group">
+        <input type="radio" name="zipMode" id="zipModeAlbum" value="album" checked />
+        <label for="zipModeAlbum" class="mode-option">
+          <span id="zipModeAlbumTitle">🖼️ Album übernehmen</span>
+          <span class="desc" id="zipModeAlbumDesc">Album mit gewähltem Titel wird angelegt, Fotos wandern rein</span>
+        </label>
+
+        <input type="radio" name="zipMode" id="zipModePhotos" value="photosOnly" />
+        <label for="zipModePhotos" class="mode-option">
+          <span id="zipModePhotosTitle">📷 Nur Fotos</span>
+          <span class="desc" id="zipModePhotosDesc">Alle Fotos direkt in die Bibliothek, ohne Album</span>
+        </label>
+      </div>
+
+      <div id="zipAlbumNameGroup">
+        <label for="zipAlbumName" id="zipAlbumNameLabel">Albumname</label>
+        <input type="text" id="zipAlbumName" placeholder="z.B. Wochenende am See" />
+      </div>
+
+      <label id="zipFileLabel">ZIP-Datei</label>
+      <div class="dropzone" id="dropzone">
+        <div id="dropzoneText"><strong>Klicken</strong> oder Datei hierher ziehen</div>
+        <div class="filename" id="zipFileName"></div>
+      </div>
+      <input type="file" id="zipFileInput" accept=".zip" style="display:none;" />
+
+      <button type="submit" id="zipSubmitBtn">ZIP importieren</button>
     </form>
 
     <div id="log"></div>
@@ -328,6 +443,24 @@
       errorPrefix: 'Fehler: ',
       doneStatus: (c, d, f) => `Fertig: ${c} neu, ${d} bereits vorhanden, ${f} fehlgeschlagen.`,
       toggleTo: 'EN',
+      tabLink: '🔗 Link',
+      tabZip: '📦 Google-Fotos-ZIP',
+      sourceImmich: 'Immich-Link erkannt',
+      sourceGoogle: 'Google-Fotos-Link erkannt',
+      googleWarning: '⚠️ Automatischer Import von Google Fotos ist experimentell und kann fehlschlagen (Google hat den Zugriff eingeschränkt). Falls es nicht klappt: Reiter "Google-Fotos-ZIP" nutzen.',
+      zipIntro: 'Auf der geteilten Google-Fotos-Seite auf "Alle herunterladen" klicken, die entstandene ZIP-Datei hier hochladen.',
+      zipModeLabel: 'Import-Art',
+      zipModeAlbumTitle: '🖼️ Album übernehmen',
+      zipModeAlbumDesc: 'Album mit gewähltem Titel wird angelegt, Fotos wandern rein',
+      zipModePhotosTitle: '📷 Nur Fotos',
+      zipModePhotosDesc: 'Alle Fotos direkt in die Bibliothek, ohne Album',
+      zipAlbumNameLabel: 'Albumname',
+      zipAlbumNamePlaceholder: 'z.B. Wochenende am See',
+      zipFileLabel: 'ZIP-Datei',
+      dropzoneText: '<strong>Klicken</strong> oder Datei hierher ziehen',
+      zipSubmitBtn: 'ZIP importieren',
+      zipSubmitBtnBusy: 'Importiere...',
+      noZipSelected: 'Bitte eine ZIP-Datei auswählen.',
     },
     en: {
       subtitle: "Import a friend's shared Immich album link into your own library.",
@@ -353,6 +486,24 @@
       errorPrefix: 'Error: ',
       doneStatus: (c, d, f) => `Done: ${c} new, ${d} already existed, ${f} failed.`,
       toggleTo: 'DE',
+      tabLink: '🔗 Link',
+      tabZip: '📦 Google Photos ZIP',
+      sourceImmich: 'Immich link detected',
+      sourceGoogle: 'Google Photos link detected',
+      googleWarning: '⚠️ Automatic Google Photos import is experimental and may fail (Google has restricted access). If it doesn\'t work: use the "Google Photos ZIP" tab instead.',
+      zipIntro: 'Click "Download all" on the shared Google Photos page, then upload the resulting ZIP file here.',
+      zipModeLabel: 'Import mode',
+      zipModeAlbumTitle: '🖼️ Import as album',
+      zipModeAlbumDesc: 'Creates an album with the chosen title and adds the photos to it',
+      zipModePhotosTitle: '📷 Photos only',
+      zipModePhotosDesc: 'All photos go straight into your library, no album',
+      zipAlbumNameLabel: 'Album name',
+      zipAlbumNamePlaceholder: 'e.g. Weekend at the lake',
+      zipFileLabel: 'ZIP file',
+      dropzoneText: '<strong>Click</strong> or drag a file here',
+      zipSubmitBtn: 'Import ZIP',
+      zipSubmitBtnBusy: 'Importing...',
+      noZipSelected: 'Please select a ZIP file.',
     },
   };
 
@@ -376,7 +527,22 @@
     document.getElementById('submitBtn').textContent = tr.submitBtn;
     document.getElementById('footer').textContent = tr.footer;
     document.getElementById('langBtn').textContent = tr.toggleTo;
+    document.getElementById('tabLink').textContent = tr.tabLink;
+    document.getElementById('tabZip').textContent = tr.tabZip;
+    document.getElementById('googleWarning').textContent = tr.googleWarning;
+    document.getElementById('zipIntro').textContent = tr.zipIntro;
+    document.getElementById('zipModeLabel').textContent = tr.zipModeLabel;
+    document.getElementById('zipModeAlbumTitle').textContent = tr.zipModeAlbumTitle;
+    document.getElementById('zipModeAlbumDesc').textContent = tr.zipModeAlbumDesc;
+    document.getElementById('zipModePhotosTitle').textContent = tr.zipModePhotosTitle;
+    document.getElementById('zipModePhotosDesc').textContent = tr.zipModePhotosDesc;
+    document.getElementById('zipAlbumNameLabel').textContent = tr.zipAlbumNameLabel;
+    document.getElementById('zipAlbumName').placeholder = tr.zipAlbumNamePlaceholder;
+    document.getElementById('zipFileLabel').textContent = tr.zipFileLabel;
+    document.getElementById('dropzoneText').innerHTML = tr.dropzoneText;
+    document.getElementById('zipSubmitBtn').textContent = tr.zipSubmitBtn;
     apiKeyInput.placeholder = apiKeyInput.dataset.set === 'true' ? tr.apiKeyPlaceholderSet : tr.apiKeyPlaceholder;
+    updateSourceBadge();
   }
 
   const form = document.getElementById('syncForm');
@@ -391,6 +557,152 @@
   const saveKeyBtn = document.getElementById('saveKeyBtn');
   const settingsStatus = document.getElementById('settingsStatus');
   const importHint = document.getElementById('importHint');
+
+  const tabLink = document.getElementById('tabLink');
+  const tabZip = document.getElementById('tabZip');
+  const zipForm = document.getElementById('zipForm');
+  const shareUrlInput = document.getElementById('shareUrl');
+  const sourceBadge = document.getElementById('sourceBadge');
+  const sourceBadgeText = document.getElementById('sourceBadgeText');
+  const googleWarning = document.getElementById('googleWarning');
+  const zipAlbumNameGroup = document.getElementById('zipAlbumNameGroup');
+  const zipAlbumName = document.getElementById('zipAlbumName');
+  const dropzone = document.getElementById('dropzone');
+  const zipFileInput = document.getElementById('zipFileInput');
+  const zipFileName = document.getElementById('zipFileName');
+  const zipSubmitBtn = document.getElementById('zipSubmitBtn');
+  let selectedZipFile = null;
+
+  function detectSourceClient(url) {
+    try {
+      const u = new URL(url);
+      const h = u.hostname.toLowerCase();
+      if (h === 'photos.google.com' || h.endsWith('.photos.google.com')) return 'google';
+      if (h === 'photos.app.goo.gl' || h === 'goo.gl') return 'google';
+      if (u.pathname.includes('/share/')) return 'immich';
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  function updateSourceBadge() {
+    const tr = translations[lang];
+    const source = detectSourceClient(shareUrlInput.value.trim());
+    if (source === 'immich') {
+      sourceBadge.style.display = 'flex';
+      sourceBadge.className = 'source-badge immich';
+      sourceBadgeText.textContent = tr.sourceImmich;
+      googleWarning.style.display = 'none';
+    } else if (source === 'google') {
+      sourceBadge.style.display = 'flex';
+      sourceBadge.className = 'source-badge google';
+      sourceBadgeText.textContent = tr.sourceGoogle;
+      googleWarning.style.display = 'block';
+    } else {
+      sourceBadge.style.display = 'none';
+      googleWarning.style.display = 'none';
+    }
+  }
+  shareUrlInput.addEventListener('input', updateSourceBadge);
+
+  tabLink.addEventListener('click', () => {
+    tabLink.classList.add('active');
+    tabZip.classList.remove('active');
+    form.style.display = 'block';
+    zipForm.style.display = 'none';
+  });
+  tabZip.addEventListener('click', () => {
+    tabZip.classList.add('active');
+    tabLink.classList.remove('active');
+    form.style.display = 'none';
+    zipForm.style.display = 'block';
+  });
+
+  function updateZipAlbumNameVisibility() {
+    const zipMode = document.querySelector('input[name="zipMode"]:checked').value;
+    zipAlbumNameGroup.style.display = zipMode === 'album' ? 'block' : 'none';
+  }
+  document.querySelectorAll('input[name="zipMode"]').forEach((el) => el.addEventListener('change', updateZipAlbumNameVisibility));
+  updateZipAlbumNameVisibility();
+
+  function setSelectedZipFile(file) {
+    if (!file) return;
+    selectedZipFile = file;
+    zipFileName.textContent = file.name;
+  }
+  dropzone.addEventListener('click', () => zipFileInput.click());
+  zipFileInput.addEventListener('change', () => setSelectedZipFile(zipFileInput.files[0]));
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) setSelectedZipFile(e.dataTransfer.files[0]);
+  });
+
+  /** Reads the NDJSON stream shared by /api/sync and /api/import-zip and
+   * updates the log/status UI. Used by both import forms. */
+  async function streamImportRequest(responsePromise) {
+    const tr = translations[lang];
+    logEl.innerHTML = '';
+    statusEl.style.display = 'none';
+    try {
+      const res = await responsePromise;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const evt = JSON.parse(line);
+          if (evt.type === 'log') appendLog(evt.message);
+          if (evt.type === 'done') {
+            statusEl.className = 'status ok';
+            statusEl.style.display = 'block';
+            statusEl.textContent = tr.doneStatus(evt.created ?? 0, evt.duplicates ?? 0, evt.failed ?? 0);
+          }
+          if (evt.type === 'error') {
+            statusEl.className = 'status err';
+            statusEl.style.display = 'block';
+            statusEl.textContent = tr.errorPrefix + evt.message;
+          }
+        }
+      }
+    } catch (err) {
+      statusEl.className = 'status err';
+      statusEl.style.display = 'block';
+      statusEl.textContent = tr.errorPrefix + err.message;
+    }
+  }
+
+  zipForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const tr = translations[lang];
+    if (!selectedZipFile) {
+      statusEl.className = 'status err';
+      statusEl.style.display = 'block';
+      statusEl.textContent = tr.errorPrefix + tr.noZipSelected;
+      return;
+    }
+    const zipMode = document.querySelector('input[name="zipMode"]:checked').value;
+    const fd = new FormData();
+    fd.append('zipFile', selectedZipFile);
+    fd.append('mode', zipMode);
+    fd.append('albumName', zipAlbumName.value.trim());
+    fd.append('lang', lang);
+
+    zipSubmitBtn.disabled = true;
+    zipSubmitBtn.textContent = tr.zipSubmitBtnBusy;
+    await streamImportRequest(fetch('/api/import-zip', { method: 'POST', body: fd }));
+    zipSubmitBtn.disabled = false;
+    zipSubmitBtn.textContent = tr.zipSubmitBtn;
+  });
 
   langBtn.addEventListener('click', () => {
     lang = lang === 'de' ? 'en' : 'de';
@@ -473,56 +785,23 @@
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const tr = translations[lang];
-    logEl.innerHTML = '';
-    statusEl.style.display = 'none';
     submitBtn.disabled = true;
     submitBtn.textContent = tr.submitBtnBusy;
 
-    const shareUrl = document.getElementById('shareUrl').value.trim();
+    const shareUrl = shareUrlInput.value.trim();
     const password = document.getElementById('password').value;
     const mode = document.querySelector('input[name="mode"]:checked').value;
 
-    try {
-      const res = await fetch('/api/sync', {
+    await streamImportRequest(
+      fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shareUrl, password: password || undefined, mode, lang }),
-      });
+      })
+    );
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const evt = JSON.parse(line);
-          if (evt.type === 'log') appendLog(evt.message);
-          if (evt.type === 'done') {
-            statusEl.className = 'status ok';
-            statusEl.style.display = 'block';
-            statusEl.textContent = tr.doneStatus(evt.created ?? 0, evt.duplicates ?? 0, evt.failed ?? 0);
-          }
-          if (evt.type === 'error') {
-            statusEl.className = 'status err';
-            statusEl.style.display = 'block';
-            statusEl.textContent = tr.errorPrefix + evt.message;
-          }
-        }
-      }
-    } catch (err) {
-      statusEl.className = 'status err';
-      statusEl.style.display = 'block';
-      statusEl.textContent = tr.errorPrefix + err.message;
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = tr.submitBtn;
-    }
+    submitBtn.disabled = false;
+    submitBtn.textContent = tr.submitBtn;
   });
 </script>
 </body>
