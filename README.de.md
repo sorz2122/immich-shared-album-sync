@@ -9,6 +9,38 @@ inklusive Nachbau des Albums.
 Funktioniert ohne API-Key des anderen: es wird nur der öffentliche Share-Link
 (optional mit Passwort) benötigt.
 
+## Features
+
+- 🔗 Link einfügen, fertig – erkennt automatisch, ob es ein Immich- oder
+  Google-Fotos-Link ist
+- 🖼️ **Album übernehmen** (mit Originaltitel, Fotos wandern rein) oder
+  **📷 nur Fotos** (direkt in die Bibliothek, ohne Album)
+- 🎯 **Zielalbum-Auswahl**: schlägt automatisch ein bestehendes Album mit
+  ähnlichem Namen vor (z.B. "Spanien Urlaub 2026" ↔ "Spanien Urlaub") und
+  ergänzt dort statt ein Duplikat anzulegen – oder manuell ein beliebiges
+  bestehendes Album wählen, oder immer neu anlegen
+- 👀 **Vorschau vor dem Import**: Thumbnails, Anzahl Fotos und vorgeschlagenes
+  Zielalbum ansehen, bevor irgendetwas heruntergeladen/hochgeladen wird –
+  bei Immich-Links, Google-Fotos-Links und ZIP-Uploads gleichermaßen
+- 📊 Echter Fortschrittsbalken während des Imports, nicht nur ein Log
+- 🕘 **Verlauf**-Reiter mit alle vergangenen Importen + Ein-Klick
+  "erneut synchronisieren" (bei Immich-/Google-Quellen)
+- 🔁 **Abos**: aus jedem Immich- oder Google-Fotos-Link ein dauerhaftes Abo
+  machen, das sich selbst in einem gewählten Intervall (15 Min / stündlich /
+  alle 6h / täglich) prüft und neue Fotos automatisch nachzieht
+- 🔔 Optionale **Home-Assistant-Webhook**-Benachrichtigung nach jedem
+  abgeschlossenen Import (manuell oder per Abo)
+- 📱 Als Homescreen-App installierbar (PWA)
+- 🔁 Re-Sync-sicher: Immichs eigene Checksum-Erkennung sorgt dafür, dass ein
+  erneuter Lauf nur wirklich neue Fotos überträgt
+- 🔐 Immich API-Key wird über die Oberfläche eingetragen (maskiertes Feld),
+  gegen deine Instanz geprüft und AES-256-GCM-verschlüsselt gespeichert –
+  nie im Klartext, nie an den Browser zurückgeschickt
+- 🔒 Login-geschützt (HTTP Basic Auth), Rate-Limiting, CSRF- und
+  SSRF-gehärtet – siehe [Sicherheit](#sicherheit)
+- 🌐 Oberfläche auf Deutsch und Englisch (Umschalter oben)
+- 🐳 Fertiger `Dockerfile` + `docker-compose.yml`
+
 ## Google Fotos importieren
 
 Google hat 2025 den programmatischen Drittanbieter-Zugriff auf geteilte
@@ -92,12 +124,40 @@ eintragen und erneut speichern.
      des geteilten Albums an (oder aktualisiert es) und ordnet alle Fotos dort ein.
    - **📷 Nur Fotos**: importiert alle Fotos direkt in deine Bibliothek, ohne
      ein Album anzulegen.
-4. "Import starten" klicken. Fortschritt wird live angezeigt.
+4. Bei "Album übernehmen" zusätzlich ein **Zielalbum** wählen:
+   - **🔎 Automatisch** (Standard): schlägt automatisch ein bestehendes Album
+     mit ähnlichem Namen vor (z.B. wird ein geteiltes "Spanien Urlaub 2026"
+     erkannt und in dein vorhandenes "Spanien Urlaub" eingeordnet statt ein
+     Duplikat anzulegen) – findet sich nichts Passendes, wird neu angelegt.
+   - Ein **bestimmtes bestehendes Album** aus der Liste auswählen, um dort
+     unabhängig vom Namen einzusortieren.
+   - **🆕 Immer neues Album anlegen**, um die automatische Erkennung zu
+     überstimmen.
+5. Klick auf "Import starten". Fortschritt wird live angezeigt.
 
 Beim erneuten Ausführen mit demselben Link werden nur **neue** Fotos
 übertragen – bereits importierte Assets erkennt Immich selbst anhand der
 Prüfsumme und überspringt sie. Das Zielalbum wird dabei wiederverwendet statt
 erneut angelegt (Zuordnung liegt lokal in `data/album-mappings.json`).
+
+## Abos (automatischer Wiederhol-Sync)
+
+Im Reiter **🔁 Abos** einen beliebigen Immich- oder Google-Fotos-Link
+einfügen, Modus/Zielalbum wählen und ein Intervall festlegen. Das Tool prüft
+im Hintergrund einmal pro Minute, ob ein Abo fällig ist, und führt es dann
+still aus – kein Browser-Tab muss offen bleiben, es läuft, solange der
+Container/Prozess läuft. Jedes Abo merkt sich direkt in der Liste den
+letzten Lauf-Zeitpunkt und das Ergebnis (oder den Fehler) und lässt sich
+jederzeit pausieren oder löschen.
+
+## Home-Assistant-Benachrichtigungen
+
+`HOME_ASSISTANT_WEBHOOK_URL` in der `.env` auf eine Home-Assistant-Webhook-
+URL setzen (Einstellungen → Automatisierungen → neue Automatisierung mit
+Trigger **Webhook** anlegen, URL kopieren) und das Tool schickt nach jedem
+abgeschlossenen Import (manuell oder per Abo) einen kleinen JSON-Payload
+(`{ event: "immich_album_sync_completed", albumName, created, duplicates,
+failed, ... }`) dorthin. Leer lassen, um das komplett zu deaktivieren.
 
 ## Deployment als Docker Container / TrueNAS Custom App
 

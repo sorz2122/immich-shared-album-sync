@@ -1,5 +1,4 @@
 # Immich Album Sync
-<img width="783" height="733" alt="image" src="https://github.com/user-attachments/assets/9dd2d1b7-b315-4454-a822-2acae56d5081" />
 
 🇩🇪 [Deutsche Version](README.de.md)
 
@@ -24,6 +23,23 @@ tool bridges that gap using only the public share link.
 - 🖼️ **Import as album** — recreates the album with its original title on
   your instance and files new photos into it, or **📷 photos only** — imports
   everything straight into your library, no album
+- 🎯 **Target album picker**: when importing as an album, it automatically
+  suggests an existing album with a similar name (e.g. an incoming "Spain
+  Trip 2026" share matches your existing "Spain Trip" album) and adds the
+  photos there instead of creating a duplicate — or pick any existing album
+  yourself from the dropdown, or force a brand-new one every time
+- 👀 **Preview before importing**: see thumbnails, the photo count, and the
+  suggested target album before anything is downloaded or uploaded — for
+  Immich links, Google Photos links, and ZIP uploads alike
+- 📊 Live progress bar during the actual import (not just a scrolling log)
+- 🕘 **History tab** with every past import and a one-click "sync again"
+  button (for Immich/Google sources)
+- 🔁 **Subscriptions**: turn any Immich or Google Photos share link into a
+  standing subscription that re-checks itself automatically on an interval
+  you choose (15 min / hourly / every 6h / daily), no manual clicking needed
+- 🔔 Optional **Home Assistant webhook** notification after every completed
+  import (manual or subscription-triggered)
+- 📱 Installable as a home-screen app (PWA)
 - 🔁 Re-run-safe: Immich's own checksum-based dedup means running it again
   only pulls in genuinely new photos; the target album is reused, not
   duplicated
@@ -122,6 +138,25 @@ Running it again on the same link only transfers **new** photos — Immich's
 own checksum matching detects and skips anything already imported. The
 target album is reused instead of being recreated (the mapping lives locally
 in `data/album-mappings.json`).
+
+## Subscriptions (auto-repeat sync)
+
+Under the **🔁 Subscriptions** tab, paste any Immich or Google Photos share
+link, pick a mode/target album, and choose an interval. The app checks once
+a minute in the background whether any subscription is due and, if so, runs
+it silently — no browser tab needs to stay open, it runs as long as the
+container/process is running. Each subscription remembers its last run time
+and result (or error) right there in the list, and can be paused or deleted
+at any time.
+
+## Home Assistant notifications
+
+Set `HOME_ASSISTANT_WEBHOOK_URL` in `.env` to a Home Assistant webhook URL
+(Settings → Automations → create one with a **Webhook** trigger, copy its
+URL) and the tool will POST a small JSON payload
+(`{ event: "immich_album_sync_completed", albumName, created, duplicates,
+failed, ... }`) to it after every completed import — manual or via a
+subscription. Leave it empty to disable this entirely.
 
 ## Deploying as a Docker container / TrueNAS Custom App
 

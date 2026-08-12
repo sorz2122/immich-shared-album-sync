@@ -13,11 +13,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPPINGS_FILE = path.join(__dirname, 'data', 'album-mappings.json');
 const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
+const SUBSCRIPTIONS_FILE = path.join(__dirname, 'data', 'subscriptions.json');
 const ENCRYPTION_ALGO = 'aes-256-gcm';
 
 const OWN_IMMICH_URL = (process.env.OWN_IMMICH_URL || '').replace(/\/+$/, '');
 const APP_USERNAME = process.env.APP_USERNAME || '';
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
+const HOME_ASSISTANT_WEBHOOK_URL = process.env.HOME_ASSISTANT_WEBHOOK_URL || '';
 const PORT = process.env.PORT || 3050;
 
 if (!OWN_IMMICH_URL || !APP_USERNAME || !APP_PASSWORD) {
@@ -144,6 +146,9 @@ const STRINGS = {
     readingZip: 'Lese ZIP-Datei...',
     zipEntriesFound: (n) => `-> ${n} Foto(s)/Video(s) in der ZIP gefunden.`,
     defaultZipAlbumName: 'Importiertes Album',
+    albumAutoMatched: (name) => `➡ Ähnliches Album gefunden: "${name}" – Fotos werden dort ergänzt.`,
+    noApiKeyShort: 'Kein API-Key hinterlegt.',
+    subscriptionRunFailed: (m) => `Abo-Sync fehlgeschlagen: ${m}`,
   },
   en: {
     connecting: (url) => `Connecting to ${url} ...`,
@@ -185,6 +190,9 @@ const STRINGS = {
     readingZip: 'Reading ZIP file...',
     zipEntriesFound: (n) => `-> Found ${n} photo(s)/video(s) in the ZIP.`,
     defaultZipAlbumName: 'Imported album',
+    albumAutoMatched: (name) => `➡ Found a similar album: "${name}" – adding photos there.`,
+    noApiKeyShort: 'No API key configured.',
+    subscriptionRunFailed: (m) => `Subscription sync failed: ${m}`,
   },
 };
 
@@ -288,6 +296,18 @@ async function readMappings() {
 async function writeMappings(data) {
   await fs.mkdir(path.dirname(MAPPINGS_FILE), { recursive: true });
   await fs.writeFile(MAPPINGS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+async function readSubscriptions() {
+  try {
+    return JSON.parse(await fs.readFile(SUBSCRIPTIONS_FILE, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+async function writeSubscriptions(list) {
+  await fs.mkdir(path.dirname(SUBSCRIPTIONS_FILE), { recursive: true });
+  await fs.writeFile(SUBSCRIPTIONS_FILE, JSON.stringify(list, null, 2), 'utf-8');
 }
 
 // ---------- encrypted settings store (Immich API key) ----------
@@ -482,19 +502,113 @@ async function addAssetsToOwnAlbum(albumId, assetIds) {
   });
 }
 
+async function getOwnAlbums() {
+  const res = await fetch(`${OWN_IMMICH_URL}/api/albums`, { headers: { 'x-api-key': ownImmichApiKey } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const albums = await res.json();
+  return albums.map((a) => ({ id: a.id, albumName: a.albumName, assetCount: a.assetCount ?? null }));
+}
+
+// ---------- existing-album name matching (for the "add to existing album" feature) ----------
+
+function normalizeAlbumName(s) {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // strip accents
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function albumNameSimilarity(a, b) {
+  const na = normalizeAlbumName(a);
+  const nb = normalizeAlbumName(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  if (na.includes(nb) || nb.includes(na)) return 0.85;
+  const setA = new Set(na.split(' '));
+  const setB = new Set(nb.split(' '));
+  const intersection = [...setA].filter((w) => setB.has(w)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return union ? intersection / union : 0;
+}
+
+const AUTO_MATCH_THRESHOLD = 0.6;
+
+/** Best-matching existing album for a given name, or null if nothing is close enough. */
+async function findMatchingAlbum(albumName) {
+  const albums = await getOwnAlbums();
+  let best = null;
+  for (const album of albums) {
+    const score = albumNameSimilarity(albumName, album.albumName);
+    if (score >= AUTO_MATCH_THRESHOLD && (!best || score > best.score)) {
+      best = { ...album, score };
+    }
+  }
+  return best;
+}
+
+async function notifyHomeAssistant(payload) {
+  if (!HOME_ASSISTANT_WEBHOOK_URL) return;
+  try {
+    await fetch(HOME_ASSISTANT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'immich_album_sync_completed', timestamp: new Date().toISOString(), ...payload }),
+    });
+  } catch (err) {
+    console.error('Home Assistant webhook failed:', err.message);
+  }
+}
+
 /**
  * Shared upload+album logic used by the Immich-share, Google-scrape and
- * ZIP-import flows alike. `downloadFn(asset)` must resolve to
- * `{ buffer, filename }` (filename may be null to keep the asset's own).
+ * ZIP-import flows alike (both manual and subscription-triggered).
+ * `downloadFn(asset)` must resolve to `{ buffer, filename }` (filename may
+ * be null to keep the asset's own).
+ *
+ * `targetAlbumId` controls which album new photos land in when importMode
+ * is 'album':
+ *  - 'new'            -> always create a fresh album, ignore any match
+ *  - a real album id  -> merge into that specific existing album
+ *  - anything else / undefined ('auto') -> reuse the album from a previous
+ *    sync of this exact source if known, otherwise try to auto-match an
+ *    existing album by name, otherwise create a new one
+ *
+ * Always records a history entry in album-mappings.json (used by both the
+ * history/re-sync list and the auto-match/reuse logic above), regardless
+ * of import mode.
  */
-async function importAssets({ assets, downloadFn, albumName, importMode, mapKey, lang, log, send }) {
-  const mappings = importMode === 'album' ? await readMappings() : null;
-  let ownAlbumId = mappings?.[mapKey]?.ownAlbumId || null;
+async function importAssets({ assets, downloadFn, albumName, importMode, mapKey, sourceType, sourceUrl, targetAlbumId, lang, log, send }) {
+  const mappings = await readMappings();
+  let ownAlbumId = null;
+
+  if (importMode === 'album') {
+    if (targetAlbumId && targetAlbumId !== 'auto' && targetAlbumId !== 'new') {
+      ownAlbumId = targetAlbumId; // explicit user choice from the dropdown
+    } else if (targetAlbumId !== 'new') {
+      ownAlbumId = mappings?.[mapKey]?.ownAlbumId || null;
+      if (!ownAlbumId) {
+        try {
+          const match = await findMatchingAlbum(albumName);
+          if (match) {
+            ownAlbumId = match.id;
+            log(t(lang, 'albumAutoMatched', match.albumName));
+          }
+        } catch {
+          // If listing albums fails for some reason, just fall through to creating a new one.
+        }
+      }
+    }
+  }
 
   const targetAssetIds = [];
   let created = 0;
   let duplicates = 0;
   let failed = 0;
+  let processed = 0;
+
+  send({ type: 'total', total: assets.length });
 
   for (const asset of assets) {
     try {
@@ -516,33 +630,41 @@ async function importAssets({ assets, downloadFn, albumName, importMode, mapKey,
     } catch (err) {
       failed++;
       log(t(lang, 'assetError', asset.id, err.message));
+    } finally {
+      processed++;
+      send({ type: 'progress', current: processed, total: assets.length });
     }
   }
 
-  if (targetAssetIds.length === 0) {
-    send({ type: 'done', created, duplicates, failed });
-    return;
-  }
-  if (importMode === 'photosOnly') {
-    log(t(lang, 'done', created, duplicates, failed));
-    send({ type: 'done', mode: 'photosOnly', created, duplicates, failed });
-    return;
-  }
-
-  if (ownAlbumId) {
-    const putRes = await addAssetsToOwnAlbum(ownAlbumId, targetAssetIds);
-    if (putRes.status === 404) ownAlbumId = null;
-    else if (!putRes.ok) throw new Error(t(lang, 'albumUpdateError', putRes.status));
-  }
-  if (!ownAlbumId) {
-    ownAlbumId = (await createOwnAlbum(albumName, targetAssetIds, lang)).id;
+  if (importMode === 'album' && targetAssetIds.length > 0) {
+    if (ownAlbumId) {
+      const putRes = await addAssetsToOwnAlbum(ownAlbumId, targetAssetIds);
+      if (putRes.status === 404) ownAlbumId = null;
+      else if (!putRes.ok) throw new Error(t(lang, 'albumUpdateError', putRes.status));
+    }
+    if (!ownAlbumId) {
+      ownAlbumId = (await createOwnAlbum(albumName, targetAssetIds, lang)).id;
+    }
   }
 
-  mappings[mapKey] = { ownAlbumId, albumName, lastSync: new Date().toISOString() };
-  await writeMappings(mappings);
+  if (mapKey) {
+    mappings[mapKey] = {
+      albumName,
+      mode: importMode,
+      ownAlbumId: importMode === 'album' ? ownAlbumId : null,
+      sourceType: sourceType || null,
+      sourceUrl: sourceUrl || null,
+      lastSync: new Date().toISOString(),
+      lastCreated: created,
+      lastDuplicates: duplicates,
+      lastFailed: failed,
+    };
+    await writeMappings(mappings);
+  }
 
   log(t(lang, 'done', created, duplicates, failed));
-  send({ type: 'done', albumId: ownAlbumId, created, duplicates, failed });
+  send({ type: 'done', mode: importMode, albumId: importMode === 'album' ? ownAlbumId : undefined, created, duplicates, failed });
+  notifyHomeAssistant({ albumName, mode: importMode, sourceType, created, duplicates, failed }).catch(() => {});
 }
 
 // ---------- Google Photos (EXPERIMENTAL) ----------
@@ -592,10 +714,118 @@ async function downloadGoogleAsset(asset) {
   return { buffer: Buffer.from(await res.arrayBuffer()), filename: null };
 }
 
+/**
+ * Resolves a share URL (Immich or Google Photos) down to an album name +
+ * asset list, without downloading/uploading anything. Used by both the
+ * lightweight preview endpoint and the real import route, so the two never
+ * drift out of sync. `log` is optional (subscriptions run silently).
+ */
+async function discoverShareContent(shareUrl, password, lang, log) {
+  assertSafeUrl(shareUrl, lang);
+
+  if (detectSource(shareUrl) === 'google') {
+    log?.(t(lang, 'googleDetected'));
+    let scraped;
+    try {
+      scraped = await scrapeGooglePhotosAlbum(shareUrl, lang);
+    } catch (err) {
+      log?.(t(lang, 'googleScrapeFailed', err.message));
+      throw new Error(t(lang, 'googleScrapeSuggestZip'));
+    }
+    const albumName = scraped.albumName || t(lang, 'defaultGoogleAlbumName');
+    return { sourceType: 'google', albumName, assets: scraped.assets, mapKey: `google::${shareUrl}` };
+  }
+
+  const { baseUrl, token } = parseShareUrl(shareUrl, lang);
+  log?.(t(lang, 'connecting', baseUrl));
+  const client = new ShareLinkClient(baseUrl, token, lang);
+  if (password) await client.login(password);
+
+  let shareInfo;
+  try {
+    shareInfo = await client.getShareInfo();
+  } catch (err) {
+    throw err.message === 'PASSWORD_REQUIRED' ? new Error(t(lang, 'passwordRequired')) : err;
+  }
+
+  const albumName = shareInfo.album?.albumName || `Shared album ${token.slice(0, 8)}`;
+  let assets = shareInfo.album?.assets || shareInfo.assets || [];
+
+  // Some Immich versions don't inline assets in the share response - fall
+  // back to walking the timeline-buckets API scoped to the album.
+  if (assets.length === 0 && shareInfo.album?.id) {
+    log?.(t(lang, 'loadingTimeline'));
+    try {
+      const bucketsRes = await client.fetchWithFallback('/api/timeline/buckets', {}, { albumId: shareInfo.album.id, size: 'MONTH' });
+      if (bucketsRes.ok) {
+        const buckets = await bucketsRes.json();
+        log?.(t(lang, 'bucketsFound', buckets.length));
+
+        for (const b of buckets) {
+          if (!b.timeBucket) continue;
+          const bRes = await client.fetchWithFallback('/api/timeline/bucket', {}, {
+            albumId: shareInfo.album.id,
+            timeBucket: b.timeBucket,
+            size: 'MONTH',
+          });
+          if (!bRes.ok) continue;
+
+          try {
+            const bData = JSON.parse(await bRes.text());
+            let extracted = [];
+            if (Array.isArray(bData)) {
+              extracted = bData;
+            } else if (bData && Array.isArray(bData.assets)) {
+              extracted = bData.assets;
+            } else if (bData && typeof bData === 'object' && Array.isArray(bData.id)) {
+              // Columnar response format: { id: [...], originalFileName: [...], ... }
+              // -> transpose into one object per asset.
+              const count = bData.id.length;
+              for (let i = 0; i < count; i++) {
+                const singleAsset = { timeBucket: b.timeBucket };
+                for (const key of Object.keys(bData)) {
+                  singleAsset[key] = Array.isArray(bData[key]) ? bData[key][i] : bData[key];
+                }
+                extracted.push(singleAsset);
+              }
+            }
+            if (extracted.length > 0) assets.push(...extracted);
+          } catch (e) {
+            log?.(t(lang, 'bucketParseError', e.message));
+          }
+        }
+      }
+    } catch (e) {
+      log?.(t(lang, 'timelineWarning', e.message));
+    }
+  }
+
+  return { sourceType: 'immich', albumName, assets, client, mapKey: `${baseUrl}::${token}` };
+}
+
 // ---------- routes: settings ----------
 
 app.get('/api/settings', async (req, res) => {
   res.json({ ownImmichUrl: OWN_IMMICH_URL, apiKeySet: !!ownImmichApiKey });
+});
+
+app.get('/api/albums', async (req, res) => {
+  if (!ownImmichApiKey) return res.json({ albums: [] });
+  try {
+    const albums = await getOwnAlbums();
+    albums.sort((a, b) => a.albumName.localeCompare(b.albumName));
+    res.json({ albums });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.get('/api/history', async (req, res) => {
+  const mappings = await readMappings();
+  const items = Object.entries(mappings)
+    .map(([mapKey, v]) => ({ mapKey, ...v }))
+    .sort((a, b) => new Date(b.lastSync || 0) - new Date(a.lastSync || 0));
+  res.json({ items });
 });
 
 app.post('/api/settings', requireSameOrigin, async (req, res) => {
@@ -609,6 +839,96 @@ app.post('/api/settings', requireSameOrigin, async (req, res) => {
     const connectedAs = await verifyOwnApiKey(trimmed, lang);
     await saveApiKey(trimmed);
     res.json({ success: true, connectedAs });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ---------- route: preview (used before the real import to show thumbnails + target album) ----------
+
+const PREVIEW_COUNT = 8;
+
+app.post('/api/preview', requireSameOrigin, async (req, res) => {
+  const lang = resolveLang(req.body);
+  try {
+    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
+    const { shareUrl, password, mode, targetAlbumId } = req.body || {};
+    if (!shareUrl) throw new Error(t(lang, 'noShareUrl'));
+
+    const discovered = await discoverShareContent(shareUrl, password, lang, null);
+
+    const thumbnails =
+      discovered.sourceType === 'google'
+        ? discovered.assets.slice(0, PREVIEW_COUNT).map((a) => ({ url: a._sourceUrl.replace(/=d$/, '=w300-h300'), filename: null }))
+        : discovered.assets.slice(0, PREVIEW_COUNT).map((a) => ({
+            url: discovered.client.buildUrl(`/api/assets/${a.id}/thumbnail`).toString(),
+            filename: a.originalFileName || null,
+          }));
+
+    let suggestedAlbum = null;
+    const importMode = mode === 'photosOnly' ? 'photosOnly' : 'album';
+    if (importMode === 'album' && (!targetAlbumId || targetAlbumId === 'auto')) {
+      try {
+        const match = await findMatchingAlbum(discovered.albumName);
+        if (match) suggestedAlbum = { id: match.id, albumName: match.albumName };
+      } catch {
+        // Non-fatal - the real import will just fall through to creating a new album.
+      }
+    }
+
+    res.json({
+      sourceType: discovered.sourceType,
+      albumName: discovered.albumName,
+      assetCount: discovered.assets.length,
+      thumbnails,
+      suggestedAlbum,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+const previewZipUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 * 1024 } });
+
+app.post('/api/preview-zip', requireSameOrigin, previewZipUpload.single('zipFile'), async (req, res) => {
+  const lang = resolveLang(req.body);
+  try {
+    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
+    if (!req.file) throw new Error(t(lang, 'noZipFile'));
+
+    let zip;
+    try {
+      zip = new AdmZip(req.file.buffer);
+    } catch (err) {
+      throw new Error(`ZIP: ${err.message}`);
+    }
+    const entries = zip.getEntries().filter((e) => !e.isDirectory && isMediaFile(e.entryName));
+
+    const thumbnails = [];
+    for (const entry of entries.slice(0, PREVIEW_COUNT)) {
+      const filename = path.basename(entry.entryName);
+      const ext = path.extname(entry.entryName).slice(1).toLowerCase();
+      if (VIDEO_EXTENSIONS.has(ext)) {
+        thumbnails.push({ filename, isVideo: true });
+        continue;
+      }
+      const buffer = entry.getData();
+      thumbnails.push({ filename, dataUrl: `data:${MIME_TYPES[ext] || 'image/jpeg'};base64,${buffer.toString('base64')}` });
+    }
+
+    const albumNameInput = (req.body.albumName || '').trim();
+    const importMode = req.body.mode === 'photosOnly' ? 'photosOnly' : 'album';
+    let suggestedAlbum = null;
+    if (importMode === 'album' && albumNameInput && (!req.body.targetAlbumId || req.body.targetAlbumId === 'auto')) {
+      try {
+        const match = await findMatchingAlbum(albumNameInput);
+        if (match) suggestedAlbum = { id: match.id, albumName: match.albumName };
+      } catch {
+        // Non-fatal.
+      }
+    }
+
+    res.json({ assetCount: entries.length, thumbnails, suggestedAlbum });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -628,114 +948,30 @@ app.post('/api/sync', requireSameOrigin, async (req, res) => {
   try {
     if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
 
-    const { shareUrl, password, mode } = req.body || {};
+    const { shareUrl, password, mode, targetAlbumId } = req.body || {};
     if (!shareUrl) throw new Error(t(lang, 'noShareUrl'));
     const importMode = mode === 'photosOnly' ? 'photosOnly' : 'album';
 
-    assertSafeUrl(shareUrl, lang);
-
-    if (detectSource(shareUrl) === 'google') {
-      log(t(lang, 'googleDetected'));
-      let scraped;
-      try {
-        scraped = await scrapeGooglePhotosAlbum(shareUrl, lang);
-      } catch (err) {
-        log(t(lang, 'googleScrapeFailed', err.message));
-        throw new Error(t(lang, 'googleScrapeSuggestZip'));
-      }
-      const albumName = scraped.albumName || t(lang, 'defaultGoogleAlbumName');
-      log(t(lang, 'albumFound', albumName, scraped.assets.length));
-
-      await importAssets({
-        assets: scraped.assets,
-        downloadFn: downloadGoogleAsset,
-        albumName,
-        importMode,
-        mapKey: `google::${shareUrl}`,
-        lang,
-        log,
-        send,
-      });
-      return res.end();
-    }
-
-    const { baseUrl, token } = parseShareUrl(shareUrl, lang);
-    log(t(lang, 'connecting', baseUrl));
-    const client = new ShareLinkClient(baseUrl, token, lang);
-    if (password) await client.login(password);
-
-    let shareInfo;
-    try {
-      shareInfo = await client.getShareInfo();
-    } catch (err) {
-      throw err.message === 'PASSWORD_REQUIRED' ? new Error(t(lang, 'passwordRequired')) : err;
-    }
-
-    const albumName = shareInfo.album?.albumName || `Shared album ${token.slice(0, 8)}`;
-    let assets = shareInfo.album?.assets || shareInfo.assets || [];
-
-    // Some Immich versions don't inline assets in the share response - fall
-    // back to walking the timeline-buckets API scoped to the album.
-    if (assets.length === 0 && shareInfo.album?.id) {
-      log(t(lang, 'loadingTimeline'));
-      try {
-        const bucketsRes = await client.fetchWithFallback('/api/timeline/buckets', {}, { albumId: shareInfo.album.id, size: 'MONTH' });
-        if (bucketsRes.ok) {
-          const buckets = await bucketsRes.json();
-          log(t(lang, 'bucketsFound', buckets.length));
-
-          for (const b of buckets) {
-            if (!b.timeBucket) continue;
-            const bRes = await client.fetchWithFallback('/api/timeline/bucket', {}, {
-              albumId: shareInfo.album.id,
-              timeBucket: b.timeBucket,
-              size: 'MONTH',
-            });
-            if (!bRes.ok) continue;
-
-            try {
-              const bData = JSON.parse(await bRes.text());
-              let extracted = [];
-              if (Array.isArray(bData)) {
-                extracted = bData;
-              } else if (bData && Array.isArray(bData.assets)) {
-                extracted = bData.assets;
-              } else if (bData && typeof bData === 'object' && Array.isArray(bData.id)) {
-                // Columnar response format: { id: [...], originalFileName: [...], ... }
-                // -> transpose into one object per asset.
-                const count = bData.id.length;
-                for (let i = 0; i < count; i++) {
-                  const singleAsset = { timeBucket: b.timeBucket };
-                  for (const key of Object.keys(bData)) {
-                    singleAsset[key] = Array.isArray(bData[key]) ? bData[key][i] : bData[key];
-                  }
-                  extracted.push(singleAsset);
-                }
-              }
-              if (extracted.length > 0) assets.push(...extracted);
-            } catch (e) {
-              log(t(lang, 'bucketParseError', e.message));
-            }
-          }
-        }
-      } catch (e) {
-        log(t(lang, 'timelineWarning', e.message));
-      }
-    }
-
-    log(t(lang, 'albumFound', albumName, assets.length));
-    if (assets.length === 0) {
+    const discovered = await discoverShareContent(shareUrl, password, lang, log);
+    log(t(lang, 'albumFound', discovered.albumName, discovered.assets.length));
+    if (discovered.assets.length === 0) {
       log(t(lang, 'noAssets'));
       send({ type: 'done', created: 0, duplicates: 0, failed: 0 });
       return res.end();
     }
 
+    const downloadFn =
+      discovered.sourceType === 'google' ? downloadGoogleAsset : async (asset) => discovered.client.downloadOriginal(asset.id);
+
     await importAssets({
-      assets,
-      downloadFn: async (asset) => client.downloadOriginal(asset.id),
-      albumName,
+      assets: discovered.assets,
+      downloadFn,
+      albumName: discovered.albumName,
       importMode,
-      mapKey: `${baseUrl}::${token}`,
+      mapKey: discovered.mapKey,
+      sourceType: discovered.sourceType,
+      sourceUrl: shareUrl,
+      targetAlbumId,
       lang,
       log,
       send,
@@ -809,6 +1045,9 @@ app.post('/api/import-zip', requireSameOrigin, zipUpload.single('zipFile'), asyn
       albumName: albumNameInput || t(lang, 'defaultZipAlbumName'),
       importMode,
       mapKey: `zip::${albumNameInput.toLowerCase() || 'unnamed'}`,
+      sourceType: 'zip',
+      sourceUrl: null,
+      targetAlbumId: req.body.targetAlbumId,
       lang,
       log,
       send,
@@ -820,6 +1059,148 @@ app.post('/api/import-zip', requireSameOrigin, zipUpload.single('zipFile'), asyn
   }
 });
 
+// ---------- routes: subscriptions (auto-repeat sync) ----------
+
+app.get('/api/subscriptions', async (req, res) => {
+  const subs = await readSubscriptions();
+  res.json({ subscriptions: subs });
+});
+
+app.post('/api/subscriptions', requireSameOrigin, async (req, res) => {
+  const lang = resolveLang(req.body);
+  const { shareUrl, mode, targetAlbumId, intervalMinutes } = req.body || {};
+  if (!shareUrl) return res.status(400).json({ error: t(lang, 'noShareUrl') });
+  try {
+    assertSafeUrl(shareUrl, lang);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  const interval = Math.max(15, Number(intervalMinutes) || 60);
+  const subs = await readSubscriptions();
+  const sub = {
+    id: crypto.randomUUID(),
+    shareUrl,
+    mode: mode === 'photosOnly' ? 'photosOnly' : 'album',
+    targetAlbumId: targetAlbumId || 'auto',
+    intervalMinutes: interval,
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    lastRun: null,
+    lastResult: null,
+  };
+  subs.push(sub);
+  await writeSubscriptions(subs);
+  res.json({ subscription: sub });
+});
+
+app.patch('/api/subscriptions/:id', requireSameOrigin, async (req, res) => {
+  const subs = await readSubscriptions();
+  const sub = subs.find((s) => s.id === req.params.id);
+  if (!sub) return res.status(404).json({ error: 'not found' });
+  if (typeof req.body?.enabled === 'boolean') sub.enabled = req.body.enabled;
+  if (req.body?.intervalMinutes) sub.intervalMinutes = Math.max(15, Number(req.body.intervalMinutes));
+  await writeSubscriptions(subs);
+  res.json({ subscription: sub });
+});
+
+app.delete('/api/subscriptions/:id', requireSameOrigin, async (req, res) => {
+  const subs = await readSubscriptions();
+  const filtered = subs.filter((s) => s.id !== req.params.id);
+  await writeSubscriptions(filtered);
+  res.json({ success: true });
+});
+
+/** Runs one subscription's sync right now. Used both by the manual
+ * "run now" button (streamed) and the background scheduler (silent). */
+async function runSubscriptionSync(sub, lang, log, send) {
+  if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKeyShort'));
+  const discovered = await discoverShareContent(sub.shareUrl, null, lang, log);
+  if (discovered.assets.length === 0) {
+    send({ type: 'done', created: 0, duplicates: 0, failed: 0 });
+    return { created: 0, duplicates: 0, failed: 0 };
+  }
+  const downloadFn =
+    discovered.sourceType === 'google' ? downloadGoogleAsset : async (asset) => discovered.client.downloadOriginal(asset.id);
+
+  let finalCounts = { created: 0, duplicates: 0, failed: 0 };
+  const wrappedSend = (obj) => {
+    if (obj.type === 'done') finalCounts = { created: obj.created, duplicates: obj.duplicates, failed: obj.failed };
+    send(obj);
+  };
+
+  await importAssets({
+    assets: discovered.assets,
+    downloadFn,
+    albumName: discovered.albumName,
+    importMode: sub.mode,
+    mapKey: discovered.mapKey,
+    sourceType: discovered.sourceType,
+    sourceUrl: sub.shareUrl,
+    targetAlbumId: sub.targetAlbumId,
+    lang,
+    log,
+    send: wrappedSend,
+  });
+  return finalCounts;
+}
+
+app.post('/api/subscriptions/:id/run', requireSameOrigin, async (req, res) => {
+  const lang = resolveLang(req.body);
+  const subs = await readSubscriptions();
+  const sub = subs.find((s) => s.id === req.params.id);
+  if (!sub) return res.status(404).end();
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache' });
+  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
+  const log = (message) => send({ type: 'log', message });
+  try {
+    const result = await runSubscriptionSync(sub, lang, log, send);
+    sub.lastRun = new Date().toISOString();
+    sub.lastResult = { ...result, error: null };
+    await writeSubscriptions(subs);
+  } catch (err) {
+    sub.lastRun = new Date().toISOString();
+    sub.lastResult = { created: 0, duplicates: 0, failed: 0, error: err.message };
+    await writeSubscriptions(subs);
+    send({ type: 'error', message: err.message });
+  }
+  res.end();
+});
+
+// Background scheduler: checks once a minute whether any enabled
+// subscription is due, and if so, runs it silently (console-only log).
+let schedulerRunning = false;
+async function checkSubscriptionsDue() {
+  if (schedulerRunning) return;
+  schedulerRunning = true;
+  try {
+    const subs = await readSubscriptions();
+    const now = Date.now();
+    let changed = false;
+    for (const sub of subs) {
+      if (!sub.enabled) continue;
+      const dueAt = sub.lastRun ? new Date(sub.lastRun).getTime() + sub.intervalMinutes * 60000 : 0;
+      if (now < dueAt) continue;
+
+      const consoleLog = (m) => console.log(`[subscription ${sub.id.slice(0, 8)}] ${m}`);
+      try {
+        const result = await runSubscriptionSync(sub, 'de', consoleLog, () => {});
+        sub.lastRun = new Date().toISOString();
+        sub.lastResult = { ...result, error: null };
+      } catch (err) {
+        sub.lastRun = new Date().toISOString();
+        sub.lastResult = { created: 0, duplicates: 0, failed: 0, error: err.message };
+        console.error(`[subscription ${sub.id.slice(0, 8)}] failed:`, err.message);
+      }
+      changed = true;
+    }
+    if (changed) await writeSubscriptions(subs);
+  } finally {
+    schedulerRunning = false;
+  }
+}
+setInterval(checkSubscriptionsDue, 60 * 1000);
+
 loadApiKey()
   .then(() => {
     app.listen(PORT, () => {
@@ -827,6 +1208,7 @@ loadApiKey()
       if (!ownImmichApiKey) {
         console.log('Note: no Immich API key configured yet - add one via the Settings panel in the web UI.');
       }
+      checkSubscriptionsDue();
     });
   })
   .catch((err) => {
