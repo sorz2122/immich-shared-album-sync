@@ -193,3 +193,12 @@ MIT
 Das Immich-Logo (`public/immich-logo.svg`) gehört zum [Immich](https://github.com/immich-app/immich)-Projekt und wird ausschließlich zur Kennzeichnung der Kompatibilität verwendet.
 
 Dieses Projekt ist ein inoffizielles Community-Tool und steht in keiner Verbindung zum Immich-Projekt.
+
+## ☕ Unterstützung
+
+https://buymeacoffee.com/sorz2122
+
+<img src="https://github.com/user-attachments/assets/87d5d62f-ba5c-4a7e-a4b8-4cf1fd3018af" width="400"/>
+<br/>
+
+---
