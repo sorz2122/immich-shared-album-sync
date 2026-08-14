@@ -1,25 +1,27 @@
 services:
   immich-album-sync:
-    build: .
-    image: immich-album-sync:latest
-    container_name: immich-album-sync
+    image: ghcr.io/sorz2122/immich-shared-album-sync:latest
+    pull_policy: always
     restart: unless-stopped
+
     ports:
       - "3050:3050"
+
     volumes:
-      # Persistiert Login-Zugangsdaten, Verschlüsselungs-Key, deine Immich-URL
-      # + API-Key (verschlüsselt) und den Sync-Verlauf über Neustarts hinweg.
-      # Auf TrueNAS auf einen eigenen Datensatz zeigen lassen, z.B.:
-      #   /mnt/<pool>/appdata/immich-album-sync/data:/app/data
-      - ./data:/app/data
-    # Alles unten ist rein optional. Ohne jede Angabe hier generiert das Tool
-    # beim allerersten Start automatisch einen Login (Username/Passwort) und
-    # einen Verschlüsselungs-Key, sichtbar per `docker compose logs`. Deine
-    # Immich-URL und deinen API-Key trägst du danach bequem im Browser unter
-    # "Einstellungen" ein - nicht hier.
+      # Persistiert Login-Zugangsdaten, Verschlüsselungs-Key,
+      # Immich-URL, API-Key und Sync-Verlauf.
+      - immich-album-sync-data:/app/data
+
+    # Alles unten ist optional.
+    # Ohne diese Angaben generiert die App beim ersten Start automatisch
+    # Login-Daten und einen Verschlüsselungs-Key.
+    #
     # environment:
     #   APP_USERNAME: "theo"
     #   APP_PASSWORD: "bitte-ein-langes-zufaelliges-passwort-setzen"
     #   OWN_IMMICH_URL: "https://immich.meinserver.de"
     #   SETTINGS_ENCRYPTION_KEY: "optional-64-hex-zeichen-openssl-rand--hex-32"
     #   HOME_ASSISTANT_WEBHOOK_URL: ""
+
+volumes:
+  immich-album-sync-data:
