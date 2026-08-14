@@ -6,21 +6,20 @@ services:
     restart: unless-stopped
     ports:
       - "3050:3050"
-    environment:
-      # Basis-URL deiner EIGENEN Immich-Instanz, ohne abschließenden Slash
-      OWN_IMMICH_URL: "https://immich.meinserver.de"
-      # Zugangsdaten für den Login-Dialog dieses Tools
-      APP_USERNAME: "theo"
-      APP_PASSWORD: "bitte-ein-langes-zufaelliges-passwort-setzen"
-      # Schlüssel zum Verschlüsseln des in den Einstellungen eingetragenen
-      # Immich API-Keys. Erzeugen mit: openssl rand -hex 32
-      SETTINGS_ENCRYPTION_KEY: "hier-64-hex-zeichen-eintragen"
-      PORT: "3050"
-      # Optional: Home Assistant Webhook-URL für Benachrichtigungen nach jedem Import
-      HOME_ASSISTANT_WEBHOOK_URL: ""
     volumes:
-      # Persistiert die lokale Album-Zuordnung (data/album-mappings.json)
-      # über Container-Neustarts hinweg. Auf TrueNAS auf einen eigenen
-      # Datensatz zeigen lassen, z.B.:
+      # Persistiert Login-Zugangsdaten, Verschlüsselungs-Key, deine Immich-URL
+      # + API-Key (verschlüsselt) und den Sync-Verlauf über Neustarts hinweg.
+      # Auf TrueNAS auf einen eigenen Datensatz zeigen lassen, z.B.:
       #   /mnt/<pool>/appdata/immich-album-sync/data:/app/data
       - ./data:/app/data
+    # Alles unten ist rein optional. Ohne jede Angabe hier generiert das Tool
+    # beim allerersten Start automatisch einen Login (Username/Passwort) und
+    # einen Verschlüsselungs-Key, sichtbar per `docker compose logs`. Deine
+    # Immich-URL und deinen API-Key trägst du danach bequem im Browser unter
+    # "Einstellungen" ein - nicht hier.
+    # environment:
+    #   APP_USERNAME: "theo"
+    #   APP_PASSWORD: "bitte-ein-langes-zufaelliges-passwort-setzen"
+    #   OWN_IMMICH_URL: "https://immich.meinserver.de"
+    #   SETTINGS_ENCRYPTION_KEY: "optional-64-hex-zeichen-openssl-rand--hex-32"
+    #   HOME_ASSISTANT_WEBHOOK_URL: ""
