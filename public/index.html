@@ -465,6 +465,13 @@
       <h1>Immich Album Sync</h1>
     </div>
     <div style="display:flex; align-items:center; gap:8px;">
+      <button type="button" class="gear-btn" id="logoutBtn" title="Abmelden" aria-label="Abmelden">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 17l5-5-5-5"></path>
+          <path d="M15 12H3"></path>
+          <path d="M21 19V5a2 2 0 0 0-2-2h-6"></path>
+        </svg>
+      </button>
       <button type="button" class="gear-btn" id="langBtn" title="Language" aria-label="Language" style="border-radius: 10px; width: auto; padding: 0 12px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.03em;">EN</button>
       <button type="button" class="gear-btn" id="gearBtn" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -681,6 +688,7 @@
       errorPrefix: 'Fehler: ',
       doneStatus: (c, d, f) => `Fertig: ${c} neu, ${d} bereits vorhanden, ${f} fehlgeschlagen.`,
       toggleTo: 'EN',
+      logoutTitle: 'Abmelden',
       tabLink: '🔗 Link',
       tabZip: '📦 Google-Fotos-ZIP',
       sourceImmich: 'Immich-Link erkannt',
@@ -762,6 +770,7 @@
       errorPrefix: 'Error: ',
       doneStatus: (c, d, f) => `Done: ${c} new, ${d} already existed, ${f} failed.`,
       toggleTo: 'DE',
+      logoutTitle: 'Log out',
       tabLink: '🔗 Link',
       tabZip: '📦 Google Photos ZIP',
       sourceImmich: 'Immich link detected',
@@ -841,6 +850,8 @@
     document.getElementById('submitBtn').textContent = tr.submitBtn;
     document.getElementById('footer').textContent = tr.footer;
     document.getElementById('langBtn').textContent = tr.toggleTo;
+    logoutBtn.title = tr.logoutTitle;
+    logoutBtn.setAttribute('aria-label', tr.logoutTitle);
     document.getElementById('tabLink').textContent = tr.tabLink;
     document.getElementById('tabZip').textContent = tr.tabZip;
     document.getElementById('googleWarning').textContent = tr.googleWarning;
@@ -894,6 +905,7 @@
   const submitBtn = document.getElementById('submitBtn');
 
   const gearBtn = document.getElementById('gearBtn');
+  const logoutBtn = document.getElementById('logoutBtn');
   const langBtn = document.getElementById('langBtn');
   const settingsPanel = document.getElementById('settingsPanel');
   const ownUrlInput = document.getElementById('ownUrlInput');
@@ -1238,6 +1250,14 @@
     } finally {
       zipSubmitBtn.disabled = false;
       zipSubmitBtn.textContent = tr.previewLoadBtn;
+    }
+  });
+
+  logoutBtn.addEventListener('click', async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+    } finally {
+      window.location.replace('/login.html');
     }
   });
 
