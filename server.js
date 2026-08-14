@@ -9,6 +9,7 @@ import net from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createAuth } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPPINGS_FILE = path.join(__dirname, 'data', 'album-mappings.json');
@@ -17,71 +18,10 @@ const SUBSCRIPTIONS_FILE = path.join(__dirname, 'data', 'subscriptions.json');
 const CREDENTIALS_FILE = path.join(__dirname, 'data', 'credentials.json');
 const ENCRYPTION_ALGO = 'aes-256-gcm';
 
-// All of these can now either come from .env (for people who prefer that) OR
-// be auto-generated / set up through the web UI on first run - see
-// loadOrGenerateCredentials() and the /api/settings route further down.
-// That's what makes "docker compose up -d" with zero configuration work.
 let OWN_IMMICH_URL = (process.env.OWN_IMMICH_URL || '').replace(/\/+$/, '');
-let APP_USERNAME = process.env.APP_USERNAME || '';
-let APP_PASSWORD = process.env.APP_PASSWORD || '';
-let SETTINGS_ENCRYPTION_KEY_HEX = process.env.SETTINGS_ENCRYPTION_KEY || '';
+let SETTINGS_ENCRYPTION_KEY_HEX = '';
 const HOME_ASSISTANT_WEBHOOK_URL = process.env.HOME_ASSISTANT_WEBHOOK_URL || '';
 const PORT = process.env.PORT || 3050;
-
-/**
- * First-run setup: if login credentials and/or the settings-encryption key
- * weren't provided via .env, generate strong random ones automatically and
- * persist them to data/credentials.json so they survive restarts. Printed
- * to the console once, the moment they're generated.
- */
-async function loadOrGenerateCredentials() {
-  let stored = {};
-  try {
-    stored = JSON.parse(await fs.readFile(CREDENTIALS_FILE, 'utf-8'));
-  } catch {
-    // No file yet - first run.
-  }
-
-  let changed = false;
-  if (!APP_USERNAME) {
-    APP_USERNAME = stored.username || 'admin';
-    if (!stored.username) changed = true;
-  }
-  if (!APP_PASSWORD) {
-    APP_PASSWORD = stored.password || crypto.randomBytes(16).toString('hex');
-    if (!stored.password) changed = true;
-  }
-  if (!SETTINGS_ENCRYPTION_KEY_HEX) {
-    SETTINGS_ENCRYPTION_KEY_HEX = stored.encryptionKey || crypto.randomBytes(32).toString('hex');
-    if (!stored.encryptionKey) changed = true;
-  }
-
-  if (changed) {
-    await fs.mkdir(path.dirname(CREDENTIALS_FILE), { recursive: true });
-    await fs.writeFile(
-      CREDENTIALS_FILE,
-      JSON.stringify({ username: APP_USERNAME, password: APP_PASSWORD, encryptionKey: SETTINGS_ENCRYPTION_KEY_HEX }, null, 2),
-      'utf-8'
-    );
-    await fs.chmod(CREDENTIALS_FILE, 0o600).catch(() => {});
-    console.log('========================================================');
-    console.log(' First run: generated a login for the web UI.');
-    console.log(` Username: ${APP_USERNAME}`);
-    console.log(` Password: ${APP_PASSWORD}`);
-    console.log(' Saved to data/credentials.json - keep that folder backed up,');
-    console.log(' this is shown here only once.');
-    console.log('========================================================');
-  }
-
-  if (APP_PASSWORD.length < 12) {
-    console.error('APP_PASSWORD is too short/weak. Please use at least 12 random characters.');
-    process.exit(1);
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(SETTINGS_ENCRYPTION_KEY_HEX)) {
-    console.error('SETTINGS_ENCRYPTION_KEY must be 64 hex chars / 32 bytes.');
-    process.exit(1);
-  }
-}
 
 // The Immich API key is never read from .env directly - it's set via the
 // in-app Settings panel and kept encrypted on disk (see loadApiKey/saveApiKey
@@ -103,38 +43,9 @@ const authLimiter = rateLimit({
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  message: 'Too many attempts. Please try again later.',
+  message: { error: 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.' },
 });
 
-function timingSafeEqualStr(a, b) {
-  const bufA = Buffer.from(String(a));
-  const bufB = Buffer.from(String(b));
-  if (bufA.length !== bufB.length) {
-    crypto.timingSafeEqual(bufA, bufA);
-    return false;
-  }
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function requireAuth(req, res, next) {
-  const header = req.headers.authorization || '';
-  const [scheme, encoded] = header.split(' ');
-  if (scheme === 'Basic' && encoded) {
-    const decoded = Buffer.from(encoded, 'base64').toString('utf-8');
-    const idx = decoded.indexOf(':');
-    const user = idx === -1 ? decoded : decoded.slice(0, idx);
-    const pass = idx === -1 ? '' : decoded.slice(idx + 1);
-    if (timingSafeEqualStr(user, APP_USERNAME) && timingSafeEqualStr(pass, APP_PASSWORD)) {
-      return next();
-    }
-  }
-  res.set('WWW-Authenticate', 'Basic realm="Immich Album Sync"');
-  res.status(401).send('Authentication required.');
-}
-
-// Browsers automatically attach cached Basic-Auth credentials to same-origin
-// requests, even ones triggered by a different page. Reject anything that's
-// clearly cross-site as a cheap CSRF guard.
 function requireSameOrigin(req, res, next) {
   const site = req.get('sec-fetch-site');
   if (site && site !== 'same-origin' && site !== 'none') {
@@ -143,10 +54,26 @@ function requireSameOrigin(req, res, next) {
   next();
 }
 
-app.use(authLimiter);
-app.use(requireAuth);
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+const auth = createAuth({
+  credentialsFile: CREDENTIALS_FILE,
+  publicDir: path.join(__dirname, 'public'),
+  encryptionKeyFromEnv: process.env.SETTINGS_ENCRYPTION_KEY || '',
+  usernameFromEnv: process.env.APP_USERNAME || '',
+  passwordFromEnv: process.env.APP_PASSWORD || '',
+  authLimiter,
+  requireSameOrigin,
+});
+
+auth.registerRoutes(app);
+
+// Statische Dateien wie Logo, CSS, Manifest und Service Worker bleiben öffentlich.
+// index.html selbst wird durch die explizite Route in auth.js geschützt.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
+// Alle nachfolgenden bestehenden API-Routen brauchen eine gültige Session.
+app.use('/api', auth.requireAuth);
 
 // ---------- i18n for log lines & error messages ----------
 
@@ -340,6 +267,7 @@ async function readMappings() {
     return {};
   }
 }
+
 async function writeMappings(data) {
   await fs.mkdir(path.dirname(MAPPINGS_FILE), { recursive: true });
   await fs.writeFile(MAPPINGS_FILE, JSON.stringify(data, null, 2), 'utf-8');
@@ -352,6 +280,7 @@ async function readSubscriptions() {
     return [];
   }
 }
+
 async function writeSubscriptions(list) {
   await fs.mkdir(path.dirname(SUBSCRIPTIONS_FILE), { recursive: true });
   await fs.writeFile(SUBSCRIPTIONS_FILE, JSON.stringify(list, null, 2), 'utf-8');
@@ -362,17 +291,30 @@ async function writeSubscriptions(list) {
 function getEncryptionKey() {
   return Buffer.from(SETTINGS_ENCRYPTION_KEY_HEX, 'hex');
 }
+
 function encryptSecret(plaintext) {
   const key = getEncryptionKey();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(ENCRYPTION_ALGO, key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
-  return { iv: iv.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: encrypted.toString('hex') };
+  return {
+    iv: iv.toString('hex'),
+    tag: cipher.getAuthTag().toString('hex'),
+    data: encrypted.toString('hex'),
+  };
 }
+
 function decryptSecret(enc) {
-  const decipher = crypto.createDecipheriv(ENCRYPTION_ALGO, getEncryptionKey(), Buffer.from(enc.iv, 'hex'));
+  const decipher = crypto.createDecipheriv(
+    ENCRYPTION_ALGO,
+    getEncryptionKey(),
+    Buffer.from(enc.iv, 'hex')
+  );
   decipher.setAuthTag(Buffer.from(enc.tag, 'hex'));
-  const decrypted = Buffer.concat([decipher.update(Buffer.from(enc.data, 'hex')), decipher.final()]);
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(enc.data, 'hex')),
+    decipher.final(),
+  ]);
   return decrypted.toString('utf-8');
 }
 
@@ -383,6 +325,7 @@ async function readSettings() {
     return {};
   }
 }
+
 async function writeSettings(data) {
   await fs.mkdir(path.dirname(SETTINGS_FILE), { recursive: true });
   await fs.writeFile(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf-8');
@@ -420,18 +363,26 @@ async function loadApiKey() {
       ownImmichApiKey = decryptSecret(settings.ownImmichApiKeyEnc);
       return;
     } catch (err) {
-      console.error('Could not decrypt stored API key (wrong/changed SETTINGS_ENCRYPTION_KEY?):', err.message);
+      console.error(
+        'Could not decrypt stored API key (wrong/changed SETTINGS_ENCRYPTION_KEY?):',
+        err.message
+      );
     }
   }
+
   // One-time migration path for people upgrading from the .env-only version
   if (process.env.OWN_IMMICH_API_KEY) {
     await saveApiKey(process.env.OWN_IMMICH_API_KEY);
-    console.log('Picked up OWN_IMMICH_API_KEY from .env and stored it encrypted. You can remove it from .env now.');
+    console.log(
+      'Picked up OWN_IMMICH_API_KEY from .env and stored it encrypted. You can remove it from .env now.'
+    );
   }
 }
 
 async function verifyOwnApiKey(url, apiKey, lang) {
-  const res = await fetch(`${url}/api/users/me`, { headers: { 'x-api-key': apiKey } });
+  const res = await fetch(`${url}/api/users/me`, {
+    headers: { 'x-api-key': apiKey },
+  });
   if (!res.ok) throw new Error(t(lang, 'keyRejected', res.status));
   const user = await res.json();
   return user.name || user.email || null;
@@ -451,23 +402,36 @@ class ShareLinkClient {
   buildUrl(pathname, extraParams = {}) {
     const u = new URL(this.baseUrl + pathname);
     u.searchParams.set(this.paramName, this.token);
-    for (const [k, v] of Object.entries(extraParams)) u.searchParams.set(k, v);
+    for (const [k, v] of Object.entries(extraParams)) {
+      u.searchParams.set(k, v);
+    }
     return u;
   }
 
   async rawFetch(url, options = {}) {
-    const headers = { 'x-immich-share-key': this.token, ...(options.headers || {}) };
-    if (this.cookie) headers['Cookie'] = this.cookie;
+    const headers = {
+      'x-immich-share-key': this.token,
+      ...(options.headers || {}),
+    };
+    if (this.cookie) headers.Cookie = this.cookie;
     return fetch(url, { ...options, headers });
   }
 
   async fetchWithFallback(pathname, options = {}, extraParams = {}) {
-    let res = await this.rawFetch(this.buildUrl(pathname, extraParams), options);
+    let res = await this.rawFetch(
+      this.buildUrl(pathname, extraParams),
+      options
+    );
+
     if (res.status === 404 && this.paramName === 'key') {
       this.paramName = 'slug';
-      res = await this.rawFetch(this.buildUrl(pathname, extraParams), options);
+      res = await this.rawFetch(
+        this.buildUrl(pathname, extraParams),
+        options
+      );
       if (!res.ok) this.paramName = 'key';
     }
+
     return res;
   }
 
@@ -477,10 +441,14 @@ class ShareLinkClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
+
     if (!res.ok) {
-      if (res.status === 401 || res.status === 400) throw new Error(t(this.lang, 'wrongPassword'));
+      if (res.status === 401 || res.status === 400) {
+        throw new Error(t(this.lang, 'wrongPassword'));
+      }
       throw new Error(t(this.lang, 'loginFailed', res.status));
     }
+
     const setCookie = res.headers.get('set-cookie');
     if (setCookie) this.cookie = setCookie.split(';')[0];
     return res.json();
@@ -488,24 +456,40 @@ class ShareLinkClient {
 
   async getShareInfo() {
     const res = await this.fetchWithFallback('/api/shared-links/me');
+
     if (!res.ok) {
       if (res.status === 401) throw new Error('PASSWORD_REQUIRED');
       throw new Error(t(this.lang, 'shareInfoError', res.status));
     }
+
     return res.json();
   }
 
   async downloadOriginal(assetId) {
-    const res = await this.fetchWithFallback(`/api/assets/${assetId}/original`);
-    if (!res.ok) throw new Error(t(this.lang, 'downloadError', res.status));
+    const res = await this.fetchWithFallback(
+      `/api/assets/${assetId}/original`
+    );
+
+    if (!res.ok) {
+      throw new Error(t(this.lang, 'downloadError', res.status));
+    }
 
     let filename = null;
     const disp = res.headers.get('content-disposition');
+
     if (disp) {
-      const match = disp.match(/filename\*?=(?:UTF-8''|["]?)?([^;\r\n"']+)/i);
-      if (match && match[1]) filename = decodeURIComponent(match[1]);
+      const match = disp.match(
+        /filename\*?=(?:UTF-8''|["]?)?([^;\r\n"']+)/i
+      );
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1]);
+      }
     }
-    return { buffer: Buffer.from(await res.arrayBuffer()), filename };
+
+    return {
+      buffer: Buffer.from(await res.arrayBuffer()),
+      filename,
+    };
   }
 }
 
@@ -513,24 +497,41 @@ async function uploadToOwnImmich(buffer, asset, lang) {
   const form = new FormData();
 
   const ext = asset.isImage === false ? 'mp4' : 'jpg';
-  const fileName = asset.originalFileName || `Asset_${asset.id.slice(0, 8)}.${ext}`;
-  const mimeType = asset.originalMimeType || (asset.isImage === false ? 'video/mp4' : 'image/jpeg');
+  const fileName =
+    asset.originalFileName ||
+    `Asset_${asset.id.slice(0, 8)}.${ext}`;
+  const mimeType =
+    asset.originalMimeType ||
+    (asset.isImage === false ? 'video/mp4' : 'image/jpeg');
 
-  form.append('assetData', new Blob([buffer], { type: mimeType }), fileName);
+  form.append(
+    'assetData',
+    new Blob([buffer], { type: mimeType }),
+    fileName
+  );
   form.append('deviceId', 'immich-album-sync');
   form.append('deviceAssetId', asset.id || fileName);
 
   // Some share responses don't include fileCreatedAt directly - fall back
   // through whatever timestamp-ish field is available, and finally "now".
-  let dateSource = asset.fileCreatedAt || asset.localDateTime || asset.createdAt || asset.updatedAt;
-  if (!dateSource && asset.timeBucket) dateSource = `${asset.timeBucket}T12:00:00.000Z`;
+  let dateSource =
+    asset.fileCreatedAt ||
+    asset.localDateTime ||
+    asset.createdAt ||
+    asset.updatedAt;
+
+  if (!dateSource && asset.timeBucket) {
+    dateSource = `${asset.timeBucket}T12:00:00.000Z`;
+  }
 
   let finalDate;
+
   try {
     finalDate = new Date(dateSource).toISOString();
   } catch {
     finalDate = new Date().toISOString();
   }
+
   form.append('fileCreatedAt', finalDate);
   form.append('fileModifiedAt', finalDate);
 
@@ -539,37 +540,64 @@ async function uploadToOwnImmich(buffer, asset, lang) {
     headers: { 'x-api-key': ownImmichApiKey },
     body: form,
   });
+
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
-    throw new Error(t(lang, 'uploadError', res.status, errText.slice(0, 150)));
+    throw new Error(
+      t(lang, 'uploadError', res.status, errText.slice(0, 150))
+    );
   }
+
   const data = await res.json();
-  return { id: data.id, created: res.status === 201 };
+
+  return {
+    id: data.id,
+    created: res.status === 201,
+  };
 }
 
 async function createOwnAlbum(albumName, assetIds, lang) {
   const res = await fetch(`${OWN_IMMICH_URL}/api/albums`, {
     method: 'POST',
-    headers: { 'x-api-key': ownImmichApiKey, 'Content-Type': 'application/json' },
+    headers: {
+      'x-api-key': ownImmichApiKey,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ albumName, assetIds }),
   });
-  if (!res.ok) throw new Error(t(lang, 'albumCreateError', res.status));
+
+  if (!res.ok) {
+    throw new Error(t(lang, 'albumCreateError', res.status));
+  }
+
   return res.json();
 }
 
 async function addAssetsToOwnAlbum(albumId, assetIds) {
   return fetch(`${OWN_IMMICH_URL}/api/albums/${albumId}/assets`, {
     method: 'PUT',
-    headers: { 'x-api-key': ownImmichApiKey, 'Content-Type': 'application/json' },
+    headers: {
+      'x-api-key': ownImmichApiKey,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ ids: assetIds }),
   });
 }
 
 async function getOwnAlbums() {
-  const res = await fetch(`${OWN_IMMICH_URL}/api/albums`, { headers: { 'x-api-key': ownImmichApiKey } });
+  const res = await fetch(`${OWN_IMMICH_URL}/api/albums`, {
+    headers: { 'x-api-key': ownImmichApiKey },
+  });
+
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
   const albums = await res.json();
-  return albums.map((a) => ({ id: a.id, albumName: a.albumName, assetCount: a.assetCount ?? null }));
+
+  return albums.map((a) => ({
+    id: a.id,
+    albumName: a.albumName,
+    assetCount: a.assetCount ?? null,
+  }));
 }
 
 // ---------- existing-album name matching (for the "add to existing album" feature) ----------
@@ -586,13 +614,16 @@ function normalizeAlbumName(s) {
 function albumNameSimilarity(a, b) {
   const na = normalizeAlbumName(a);
   const nb = normalizeAlbumName(b);
+
   if (!na || !nb) return 0;
   if (na === nb) return 1;
   if (na.includes(nb) || nb.includes(na)) return 0.85;
+
   const setA = new Set(na.split(' '));
   const setB = new Set(nb.split(' '));
   const intersection = [...setA].filter((w) => setB.has(w)).length;
   const union = new Set([...setA, ...setB]).size;
+
   return union ? intersection / union : 0;
 }
 
@@ -602,22 +633,33 @@ const AUTO_MATCH_THRESHOLD = 0.6;
 async function findMatchingAlbum(albumName) {
   const albums = await getOwnAlbums();
   let best = null;
+
   for (const album of albums) {
     const score = albumNameSimilarity(albumName, album.albumName);
-    if (score >= AUTO_MATCH_THRESHOLD && (!best || score > best.score)) {
+
+    if (
+      score >= AUTO_MATCH_THRESHOLD &&
+      (!best || score > best.score)
+    ) {
       best = { ...album, score };
     }
   }
+
   return best;
 }
 
 async function notifyHomeAssistant(payload) {
   if (!HOME_ASSISTANT_WEBHOOK_URL) return;
+
   try {
     await fetch(HOME_ASSISTANT_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event: 'immich_album_sync_completed', timestamp: new Date().toISOString(), ...payload }),
+      body: JSON.stringify({
+        event: 'immich_album_sync_completed',
+        timestamp: new Date().toISOString(),
+        ...payload,
+      }),
     });
   } catch (err) {
     console.error('Home Assistant webhook failed:', err.message);
@@ -642,18 +684,36 @@ async function notifyHomeAssistant(payload) {
  * history/re-sync list and the auto-match/reuse logic above), regardless
  * of import mode.
  */
-async function importAssets({ assets, downloadFn, albumName, importMode, mapKey, sourceType, sourceUrl, targetAlbumId, lang, log, send }) {
+async function importAssets({
+  assets,
+  downloadFn,
+  albumName,
+  importMode,
+  mapKey,
+  sourceType,
+  sourceUrl,
+  targetAlbumId,
+  lang,
+  log,
+  send,
+}) {
   const mappings = await readMappings();
   let ownAlbumId = null;
 
   if (importMode === 'album') {
-    if (targetAlbumId && targetAlbumId !== 'auto' && targetAlbumId !== 'new') {
-      ownAlbumId = targetAlbumId; // explicit user choice from the dropdown
+    if (
+      targetAlbumId &&
+      targetAlbumId !== 'auto' &&
+      targetAlbumId !== 'new'
+    ) {
+      ownAlbumId = targetAlbumId;
     } else if (targetAlbumId !== 'new') {
       ownAlbumId = mappings?.[mapKey]?.ownAlbumId || null;
+
       if (!ownAlbumId) {
         try {
           const match = await findMatchingAlbum(albumName);
+
           if (match) {
             ownAlbumId = match.id;
             log(t(lang, 'albumAutoMatched', match.albumName));
@@ -676,13 +736,22 @@ async function importAssets({ assets, downloadFn, albumName, importMode, mapKey,
   for (const asset of assets) {
     try {
       log(t(lang, 'downloading', String(asset.id).slice(0, 8)));
+
       const downloaded = await downloadFn(asset);
+
       if (downloaded.filename) {
         asset.originalFileName = downloaded.filename;
         log(t(lang, 'actualFilename', downloaded.filename));
       }
-      const result = await uploadToOwnImmich(downloaded.buffer, asset, lang);
+
+      const result = await uploadToOwnImmich(
+        downloaded.buffer,
+        asset,
+        lang
+      );
+
       targetAssetIds.push(result.id);
+
       if (result.created) {
         created++;
         log(t(lang, 'uploaded'));
@@ -695,18 +764,34 @@ async function importAssets({ assets, downloadFn, albumName, importMode, mapKey,
       log(t(lang, 'assetError', asset.id, err.message));
     } finally {
       processed++;
-      send({ type: 'progress', current: processed, total: assets.length });
+      send({
+        type: 'progress',
+        current: processed,
+        total: assets.length,
+      });
     }
   }
 
   if (importMode === 'album' && targetAssetIds.length > 0) {
     if (ownAlbumId) {
-      const putRes = await addAssetsToOwnAlbum(ownAlbumId, targetAssetIds);
-      if (putRes.status === 404) ownAlbumId = null;
-      else if (!putRes.ok) throw new Error(t(lang, 'albumUpdateError', putRes.status));
+      const putRes = await addAssetsToOwnAlbum(
+        ownAlbumId,
+        targetAssetIds
+      );
+
+      if (putRes.status === 404) {
+        ownAlbumId = null;
+      } else if (!putRes.ok) {
+        throw new Error(
+          t(lang, 'albumUpdateError', putRes.status)
+        );
+      }
     }
+
     if (!ownAlbumId) {
-      ownAlbumId = (await createOwnAlbum(albumName, targetAssetIds, lang)).id;
+      ownAlbumId = (
+        await createOwnAlbum(albumName, targetAssetIds, lang)
+      ).id;
     }
   }
 
@@ -722,12 +807,29 @@ async function importAssets({ assets, downloadFn, albumName, importMode, mapKey,
       lastDuplicates: duplicates,
       lastFailed: failed,
     };
+
     await writeMappings(mappings);
   }
 
   log(t(lang, 'done', created, duplicates, failed));
-  send({ type: 'done', mode: importMode, albumId: importMode === 'album' ? ownAlbumId : undefined, created, duplicates, failed });
-  notifyHomeAssistant({ albumName, mode: importMode, sourceType, created, duplicates, failed }).catch(() => {});
+
+  send({
+    type: 'done',
+    mode: importMode,
+    albumId: importMode === 'album' ? ownAlbumId : undefined,
+    created,
+    duplicates,
+    failed,
+  });
+
+  notifyHomeAssistant({
+    albumName,
+    mode: importMode,
+    sourceType,
+    created,
+    duplicates,
+    failed,
+  }).catch(() => {});
 }
 
 // ---------- Google Photos (EXPERIMENTAL) ----------
@@ -743,24 +845,45 @@ async function importAssets({ assets, downloadFn, albumName, importMode, mapKey,
 async function scrapeGooglePhotosAlbum(shareUrl, lang) {
   const res = await fetch(shareUrl, {
     redirect: 'follow',
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; immich-album-sync)' },
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (compatible; immich-album-sync)',
+    },
   });
+
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
   const html = await res.text();
 
   let albumName = null;
   const titleMatch =
-    html.match(/<meta property="og:title" content="([^"]+)"/i) || html.match(/<title>([^<]+)<\/title>/i);
-  if (titleMatch) albumName = titleMatch[1].trim();
+    html.match(
+      /<meta property="og:title" content="([^"]+)"/i
+    ) ||
+    html.match(/<title>([^<]+)<\/title>/i);
 
-  // Google embeds each photo's base image URL as https://lh3.googleusercontent.com/pw/<id>
-  // in the page's inline data. Appending "=d" requests the original file for download.
-  const matches = [...html.matchAll(/https:\/\/lh3\.googleusercontent\.com\/pw\/[A-Za-z0-9_-]+/g)];
+  if (titleMatch) {
+    albumName = titleMatch[1].trim();
+  }
+
+  const matches = [
+    ...html.matchAll(
+      /https:\/\/lh3\.googleusercontent\.com\/pw\/[A-Za-z0-9_-]+/g
+    ),
+  ];
+
   const uniqueUrls = [...new Set(matches.map((m) => m[0]))];
-  if (uniqueUrls.length === 0) throw new Error('no image URLs found in page');
+
+  if (uniqueUrls.length === 0) {
+    throw new Error('no image URLs found in page');
+  }
 
   const assets = uniqueUrls.map((url, i) => ({
-    id: crypto.createHash('sha1').update(url).digest('hex').slice(0, 16),
+    id: crypto
+      .createHash('sha1')
+      .update(url)
+      .digest('hex')
+      .slice(0, 16),
     originalFileName: `google-photo-${i + 1}.jpg`,
     originalMimeType: 'image/jpeg',
     isImage: true,
@@ -768,13 +891,23 @@ async function scrapeGooglePhotosAlbum(shareUrl, lang) {
     _sourceUrl: `${url}=d`,
   }));
 
-  return { albumName, assets };
+  return {
+    albumName,
+    assets,
+  };
 }
 
 async function downloadGoogleAsset(asset) {
   const res = await fetch(asset._sourceUrl);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return { buffer: Buffer.from(await res.arrayBuffer()), filename: null };
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  return {
+    buffer: Buffer.from(await res.arrayBuffer()),
+    filename: null,
+  };
 }
 
 /**
@@ -783,514 +916,1351 @@ async function downloadGoogleAsset(asset) {
  * lightweight preview endpoint and the real import route, so the two never
  * drift out of sync. `log` is optional (subscriptions run silently).
  */
-async function discoverShareContent(shareUrl, password, lang, log) {
+async function discoverShareContent(
+  shareUrl,
+  password,
+  lang,
+  log
+) {
   assertSafeUrl(shareUrl, lang);
 
   if (detectSource(shareUrl) === 'google') {
     log?.(t(lang, 'googleDetected'));
+
     let scraped;
+
     try {
-      scraped = await scrapeGooglePhotosAlbum(shareUrl, lang);
+      scraped = await scrapeGooglePhotosAlbum(
+        shareUrl,
+        lang
+      );
     } catch (err) {
       log?.(t(lang, 'googleScrapeFailed', err.message));
       throw new Error(t(lang, 'googleScrapeSuggestZip'));
     }
-    const albumName = scraped.albumName || t(lang, 'defaultGoogleAlbumName');
-    return { sourceType: 'google', albumName, assets: scraped.assets, mapKey: `google::${shareUrl}` };
+
+    const albumName =
+      scraped.albumName ||
+      t(lang, 'defaultGoogleAlbumName');
+
+    return {
+      sourceType: 'google',
+      albumName,
+      assets: scraped.assets,
+      mapKey: `google::${shareUrl}`,
+    };
   }
 
-  const { baseUrl, token } = parseShareUrl(shareUrl, lang);
+  const { baseUrl, token } = parseShareUrl(
+    shareUrl,
+    lang
+  );
+
   log?.(t(lang, 'connecting', baseUrl));
-  const client = new ShareLinkClient(baseUrl, token, lang);
-  if (password) await client.login(password);
+
+  const client = new ShareLinkClient(
+    baseUrl,
+    token,
+    lang
+  );
+
+  if (password) {
+    await client.login(password);
+  }
 
   let shareInfo;
+
   try {
     shareInfo = await client.getShareInfo();
   } catch (err) {
-    throw err.message === 'PASSWORD_REQUIRED' ? new Error(t(lang, 'passwordRequired')) : err;
+    throw err.message === 'PASSWORD_REQUIRED'
+      ? new Error(t(lang, 'passwordRequired'))
+      : err;
   }
 
-  const albumName = shareInfo.album?.albumName || `Shared album ${token.slice(0, 8)}`;
-  let assets = shareInfo.album?.assets || shareInfo.assets || [];
+  const albumName =
+    shareInfo.album?.albumName ||
+    `Shared album ${token.slice(0, 8)}`;
 
-  // Some Immich versions don't inline assets in the share response - fall
-  // back to walking the timeline-buckets API scoped to the album.
-  if (assets.length === 0 && shareInfo.album?.id) {
+  let assets =
+    shareInfo.album?.assets ||
+    shareInfo.assets ||
+    [];
+
+  if (
+    assets.length === 0 &&
+    shareInfo.album?.id
+  ) {
     log?.(t(lang, 'loadingTimeline'));
+
     try {
-      const bucketsRes = await client.fetchWithFallback('/api/timeline/buckets', {}, { albumId: shareInfo.album.id, size: 'MONTH' });
+      const bucketsRes =
+        await client.fetchWithFallback(
+          '/api/timeline/buckets',
+          {},
+          {
+            albumId: shareInfo.album.id,
+            size: 'MONTH',
+          }
+        );
+
       if (bucketsRes.ok) {
         const buckets = await bucketsRes.json();
-        log?.(t(lang, 'bucketsFound', buckets.length));
+
+        log?.(
+          t(lang, 'bucketsFound', buckets.length)
+        );
 
         for (const b of buckets) {
           if (!b.timeBucket) continue;
-          const bRes = await client.fetchWithFallback('/api/timeline/bucket', {}, {
-            albumId: shareInfo.album.id,
-            timeBucket: b.timeBucket,
-            size: 'MONTH',
-          });
+
+          const bRes =
+            await client.fetchWithFallback(
+              '/api/timeline/bucket',
+              {},
+              {
+                albumId: shareInfo.album.id,
+                timeBucket: b.timeBucket,
+                size: 'MONTH',
+              }
+            );
+
           if (!bRes.ok) continue;
 
           try {
-            const bData = JSON.parse(await bRes.text());
+            const bData = JSON.parse(
+              await bRes.text()
+            );
+
             let extracted = [];
+
             if (Array.isArray(bData)) {
               extracted = bData;
-            } else if (bData && Array.isArray(bData.assets)) {
+            } else if (
+              bData &&
+              Array.isArray(bData.assets)
+            ) {
               extracted = bData.assets;
-            } else if (bData && typeof bData === 'object' && Array.isArray(bData.id)) {
-              // Columnar response format: { id: [...], originalFileName: [...], ... }
-              // -> transpose into one object per asset.
+            } else if (
+              bData &&
+              typeof bData === 'object' &&
+              Array.isArray(bData.id)
+            ) {
               const count = bData.id.length;
+
               for (let i = 0; i < count; i++) {
-                const singleAsset = { timeBucket: b.timeBucket };
+                const singleAsset = {
+                  timeBucket: b.timeBucket,
+                };
+
                 for (const key of Object.keys(bData)) {
-                  singleAsset[key] = Array.isArray(bData[key]) ? bData[key][i] : bData[key];
+                  singleAsset[key] =
+                    Array.isArray(bData[key])
+                      ? bData[key][i]
+                      : bData[key];
                 }
+
                 extracted.push(singleAsset);
               }
             }
-            if (extracted.length > 0) assets.push(...extracted);
+
+            if (extracted.length > 0) {
+              assets.push(...extracted);
+            }
           } catch (e) {
-            log?.(t(lang, 'bucketParseError', e.message));
+            log?.(
+              t(
+                lang,
+                'bucketParseError',
+                e.message
+              )
+            );
           }
         }
       }
     } catch (e) {
-      log?.(t(lang, 'timelineWarning', e.message));
+      log?.(
+        t(
+          lang,
+          'timelineWarning',
+          e.message
+        )
+      );
     }
   }
 
-  return { sourceType: 'immich', albumName, assets, client, mapKey: `${baseUrl}::${token}` };
+  return {
+    sourceType: 'immich',
+    albumName,
+    assets,
+    client,
+    mapKey: `${baseUrl}::${token}`,
+  };
 }
 
 // ---------- routes: settings ----------
 
 app.get('/api/settings', async (req, res) => {
-  res.json({ ownImmichUrl: OWN_IMMICH_URL, apiKeySet: !!ownImmichApiKey });
+  res.json({
+    ownImmichUrl: OWN_IMMICH_URL,
+    apiKeySet: !!ownImmichApiKey,
+  });
 });
 
 app.get('/api/albums', async (req, res) => {
-  if (!ownImmichApiKey) return res.json({ albums: [] });
+  if (!ownImmichApiKey) {
+    return res.json({ albums: [] });
+  }
+
   try {
     const albums = await getOwnAlbums();
-    albums.sort((a, b) => a.albumName.localeCompare(b.albumName));
+
+    albums.sort((a, b) =>
+      a.albumName.localeCompare(b.albumName)
+    );
+
     res.json({ albums });
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.status(502).json({
+      error: err.message,
+    });
   }
 });
 
 app.get('/api/history', async (req, res) => {
   const mappings = await readMappings();
+
   const items = Object.entries(mappings)
-    .map(([mapKey, v]) => ({ mapKey, ...v }))
-    .sort((a, b) => new Date(b.lastSync || 0) - new Date(a.lastSync || 0));
+    .map(([mapKey, v]) => ({
+      mapKey,
+      ...v,
+    }))
+    .sort(
+      (a, b) =>
+        new Date(b.lastSync || 0) -
+        new Date(a.lastSync || 0)
+    );
+
   res.json({ items });
 });
 
-app.post('/api/settings', requireSameOrigin, async (req, res) => {
-  const lang = resolveLang(req.body);
-  const urlInput = (req.body?.ownImmichUrl || '').trim().replace(/\/+$/, '');
-  const apiKeyInput = (req.body?.apiKey || '').trim();
+app.post(
+  '/api/settings',
+  requireSameOrigin,
+  async (req, res) => {
+    const lang = resolveLang(req.body);
 
-  const effectiveUrl = urlInput || OWN_IMMICH_URL;
-  const effectiveKey = apiKeyInput || ownImmichApiKey;
+    const urlInput = (
+      req.body?.ownImmichUrl || ''
+    )
+      .trim()
+      .replace(/\/+$/, '');
 
-  if (!effectiveUrl) {
-    return res.status(400).json({ error: t(lang, 'invalidUrl') });
-  }
-  try {
-    const u = new URL(effectiveUrl);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad protocol');
-  } catch {
-    return res.status(400).json({ error: t(lang, 'invalidUrl') });
-  }
-  if (!effectiveKey || effectiveKey.length < 10) {
-    return res.status(400).json({ error: t(lang, 'invalidKey') });
-  }
+    const apiKeyInput = (
+      req.body?.apiKey || ''
+    ).trim();
 
-  try {
-    const connectedAs = await verifyOwnApiKey(effectiveUrl, effectiveKey, lang);
-    if (urlInput) await saveOwnImmichUrl(effectiveUrl);
-    if (apiKeyInput) await saveApiKey(effectiveKey);
-    res.json({ success: true, connectedAs, ownImmichUrl: effectiveUrl });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+    const effectiveUrl =
+      urlInput || OWN_IMMICH_URL;
+
+    const effectiveKey =
+      apiKeyInput || ownImmichApiKey;
+
+    if (!effectiveUrl) {
+      return res.status(400).json({
+        error: t(lang, 'invalidUrl'),
+      });
+    }
+
+    try {
+      const u = new URL(effectiveUrl);
+
+      if (
+        u.protocol !== 'http:' &&
+        u.protocol !== 'https:'
+      ) {
+        throw new Error('bad protocol');
+      }
+    } catch {
+      return res.status(400).json({
+        error: t(lang, 'invalidUrl'),
+      });
+    }
+
+    if (
+      !effectiveKey ||
+      effectiveKey.length < 10
+    ) {
+      return res.status(400).json({
+        error: t(lang, 'invalidKey'),
+      });
+    }
+
+    try {
+      const connectedAs =
+        await verifyOwnApiKey(
+          effectiveUrl,
+          effectiveKey,
+          lang
+        );
+
+      if (urlInput) {
+        await saveOwnImmichUrl(effectiveUrl);
+      }
+
+      if (apiKeyInput) {
+        await saveApiKey(effectiveKey);
+      }
+
+      res.json({
+        success: true,
+        connectedAs,
+        ownImmichUrl: effectiveUrl,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error: err.message,
+      });
+    }
   }
-});
+);
 
 // ---------- route: preview (used before the real import to show thumbnails + target album) ----------
 
 const PREVIEW_COUNT = 8;
 
-app.post('/api/preview', requireSameOrigin, async (req, res) => {
-  const lang = resolveLang(req.body);
-  try {
-    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
-    const { shareUrl, password, mode, targetAlbumId } = req.body || {};
-    if (!shareUrl) throw new Error(t(lang, 'noShareUrl'));
+app.post(
+  '/api/preview',
+  requireSameOrigin,
+  async (req, res) => {
+    const lang = resolveLang(req.body);
 
-    const discovered = await discoverShareContent(shareUrl, password, lang, null);
-
-    const thumbnails =
-      discovered.sourceType === 'google'
-        ? discovered.assets.slice(0, PREVIEW_COUNT).map((a) => ({ url: a._sourceUrl.replace(/=d$/, '=w300-h300'), filename: null }))
-        : discovered.assets.slice(0, PREVIEW_COUNT).map((a) => ({
-            url: discovered.client.buildUrl(`/api/assets/${a.id}/thumbnail`).toString(),
-            filename: a.originalFileName || null,
-          }));
-
-    let suggestedAlbum = null;
-    const importMode = mode === 'photosOnly' ? 'photosOnly' : 'album';
-    if (importMode === 'album' && (!targetAlbumId || targetAlbumId === 'auto')) {
-      try {
-        const match = await findMatchingAlbum(discovered.albumName);
-        if (match) suggestedAlbum = { id: match.id, albumName: match.albumName };
-      } catch {
-        // Non-fatal - the real import will just fall through to creating a new album.
-      }
-    }
-
-    res.json({
-      sourceType: discovered.sourceType,
-      albumName: discovered.albumName,
-      assetCount: discovered.assets.length,
-      thumbnails,
-      suggestedAlbum,
-    });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-const previewZipUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 * 1024 } });
-
-app.post('/api/preview-zip', requireSameOrigin, previewZipUpload.single('zipFile'), async (req, res) => {
-  const lang = resolveLang(req.body);
-  try {
-    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
-    if (!req.file) throw new Error(t(lang, 'noZipFile'));
-
-    let zip;
     try {
-      zip = new AdmZip(req.file.buffer);
+      if (!ownImmichApiKey) {
+        throw new Error(
+          t(lang, 'noApiKey')
+        );
+      }
+
+      const {
+        shareUrl,
+        password,
+        mode,
+        targetAlbumId,
+      } = req.body || {};
+
+      if (!shareUrl) {
+        throw new Error(
+          t(lang, 'noShareUrl')
+        );
+      }
+
+      const discovered =
+        await discoverShareContent(
+          shareUrl,
+          password,
+          lang,
+          null
+        );
+
+      const thumbnails =
+        discovered.sourceType === 'google'
+          ? discovered.assets
+              .slice(0, PREVIEW_COUNT)
+              .map((a) => ({
+                url: a._sourceUrl.replace(
+                  /=d$/,
+                  '=w300-h300'
+                ),
+                filename: null,
+              }))
+          : discovered.assets
+              .slice(0, PREVIEW_COUNT)
+              .map((a) => ({
+                url: discovered.client
+                  .buildUrl(
+                    `/api/assets/${a.id}/thumbnail`
+                  )
+                  .toString(),
+                filename:
+                  a.originalFileName ||
+                  null,
+              }));
+
+      let suggestedAlbum = null;
+
+      const importMode =
+        mode === 'photosOnly'
+          ? 'photosOnly'
+          : 'album';
+
+      if (
+        importMode === 'album' &&
+        (!targetAlbumId ||
+          targetAlbumId === 'auto')
+      ) {
+        try {
+          const match =
+            await findMatchingAlbum(
+              discovered.albumName
+            );
+
+          if (match) {
+            suggestedAlbum = {
+              id: match.id,
+              albumName:
+                match.albumName,
+            };
+          }
+        } catch {
+          // Non-fatal - the real import will just fall through to creating a new album.
+        }
+      }
+
+      res.json({
+        sourceType:
+          discovered.sourceType,
+        albumName:
+          discovered.albumName,
+        assetCount:
+          discovered.assets.length,
+        thumbnails,
+        suggestedAlbum,
+      });
     } catch (err) {
-      throw new Error(`ZIP: ${err.message}`);
+      res.status(400).json({
+        error: err.message,
+      });
     }
-    const entries = zip.getEntries().filter((e) => !e.isDirectory && isMediaFile(e.entryName));
-
-    const thumbnails = [];
-    for (const entry of entries.slice(0, PREVIEW_COUNT)) {
-      const filename = path.basename(entry.entryName);
-      const ext = path.extname(entry.entryName).slice(1).toLowerCase();
-      if (VIDEO_EXTENSIONS.has(ext)) {
-        thumbnails.push({ filename, isVideo: true });
-        continue;
-      }
-      const buffer = entry.getData();
-      thumbnails.push({ filename, dataUrl: `data:${MIME_TYPES[ext] || 'image/jpeg'};base64,${buffer.toString('base64')}` });
-    }
-
-    const albumNameInput = (req.body.albumName || '').trim();
-    const importMode = req.body.mode === 'photosOnly' ? 'photosOnly' : 'album';
-    let suggestedAlbum = null;
-    if (importMode === 'album' && albumNameInput && (!req.body.targetAlbumId || req.body.targetAlbumId === 'auto')) {
-      try {
-        const match = await findMatchingAlbum(albumNameInput);
-        if (match) suggestedAlbum = { id: match.id, albumName: match.albumName };
-      } catch {
-        // Non-fatal.
-      }
-    }
-
-    res.json({ assetCount: entries.length, thumbnails, suggestedAlbum });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
   }
+);
+
+const previewZipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 4 * 1024 * 1024 * 1024,
+  },
 });
+
+app.post(
+  '/api/preview-zip',
+  requireSameOrigin,
+  previewZipUpload.single('zipFile'),
+  async (req, res) => {
+    const lang = resolveLang(req.body);
+
+    try {
+      if (!ownImmichApiKey) {
+        throw new Error(
+          t(lang, 'noApiKey')
+        );
+      }
+
+      if (!req.file) {
+        throw new Error(
+          t(lang, 'noZipFile')
+        );
+      }
+
+      let zip;
+
+      try {
+        zip = new AdmZip(
+          req.file.buffer
+        );
+      } catch (err) {
+        throw new Error(
+          `ZIP: ${err.message}`
+        );
+      }
+
+      const entries = zip
+        .getEntries()
+        .filter(
+          (e) =>
+            !e.isDirectory &&
+            isMediaFile(e.entryName)
+        );
+
+      const thumbnails = [];
+
+      for (const entry of entries.slice(
+        0,
+        PREVIEW_COUNT
+      )) {
+        const filename = path.basename(
+          entry.entryName
+        );
+
+        const ext = path
+          .extname(entry.entryName)
+          .slice(1)
+          .toLowerCase();
+
+        if (
+          VIDEO_EXTENSIONS.has(ext)
+        ) {
+          thumbnails.push({
+            filename,
+            isVideo: true,
+          });
+          continue;
+        }
+
+        const buffer =
+          entry.getData();
+
+        thumbnails.push({
+          filename,
+          dataUrl: `data:${
+            MIME_TYPES[ext] ||
+            'image/jpeg'
+          };base64,${buffer.toString(
+            'base64'
+          )}`,
+        });
+      }
+
+      const albumNameInput = (
+        req.body.albumName || ''
+      ).trim();
+
+      const importMode =
+        req.body.mode ===
+        'photosOnly'
+          ? 'photosOnly'
+          : 'album';
+
+      let suggestedAlbum = null;
+
+      if (
+        importMode === 'album' &&
+        albumNameInput &&
+        (!req.body.targetAlbumId ||
+          req.body.targetAlbumId ===
+            'auto')
+      ) {
+        try {
+          const match =
+            await findMatchingAlbum(
+              albumNameInput
+            );
+
+          if (match) {
+            suggestedAlbum = {
+              id: match.id,
+              albumName:
+                match.albumName,
+            };
+          }
+        } catch {
+          // Non-fatal.
+        }
+      }
+
+      res.json({
+        assetCount:
+          entries.length,
+        thumbnails,
+        suggestedAlbum,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error: err.message,
+      });
+    }
+  }
+);
 
 // ---------- route: sync ----------
 
-app.post('/api/sync', requireSameOrigin, async (req, res) => {
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson; charset=utf-8',
-    'Cache-Control': 'no-cache',
-  });
-  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
-  const lang = resolveLang(req.body);
-  const log = (message) => send({ type: 'log', message });
-
-  try {
-    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
-
-    const { shareUrl, password, mode, targetAlbumId } = req.body || {};
-    if (!shareUrl) throw new Error(t(lang, 'noShareUrl'));
-    const importMode = mode === 'photosOnly' ? 'photosOnly' : 'album';
-
-    const discovered = await discoverShareContent(shareUrl, password, lang, log);
-    log(t(lang, 'albumFound', discovered.albumName, discovered.assets.length));
-    if (discovered.assets.length === 0) {
-      log(t(lang, 'noAssets'));
-      send({ type: 'done', created: 0, duplicates: 0, failed: 0 });
-      return res.end();
-    }
-
-    const downloadFn =
-      discovered.sourceType === 'google' ? downloadGoogleAsset : async (asset) => discovered.client.downloadOriginal(asset.id);
-
-    await importAssets({
-      assets: discovered.assets,
-      downloadFn,
-      albumName: discovered.albumName,
-      importMode,
-      mapKey: discovered.mapKey,
-      sourceType: discovered.sourceType,
-      sourceUrl: shareUrl,
-      targetAlbumId,
-      lang,
-      log,
-      send,
+app.post(
+  '/api/sync',
+  requireSameOrigin,
+  async (req, res) => {
+    res.writeHead(200, {
+      'Content-Type':
+        'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
     });
-    res.end();
-  } catch (err) {
-    send({ type: 'error', message: err.message });
-    res.end();
+
+    const send = (obj) =>
+      res.write(
+        JSON.stringify(obj) + '\n'
+      );
+
+    const lang = resolveLang(
+      req.body
+    );
+
+    const log = (message) =>
+      send({
+        type: 'log',
+        message,
+      });
+
+    try {
+      if (!ownImmichApiKey) {
+        throw new Error(
+          t(lang, 'noApiKey')
+        );
+      }
+
+      const {
+        shareUrl,
+        password,
+        mode,
+        targetAlbumId,
+      } = req.body || {};
+
+      if (!shareUrl) {
+        throw new Error(
+          t(lang, 'noShareUrl')
+        );
+      }
+
+      const importMode =
+        mode === 'photosOnly'
+          ? 'photosOnly'
+          : 'album';
+
+      const discovered =
+        await discoverShareContent(
+          shareUrl,
+          password,
+          lang,
+          log
+        );
+
+      log(
+        t(
+          lang,
+          'albumFound',
+          discovered.albumName,
+          discovered.assets.length
+        )
+      );
+
+      if (
+        discovered.assets.length === 0
+      ) {
+        log(t(lang, 'noAssets'));
+
+        send({
+          type: 'done',
+          created: 0,
+          duplicates: 0,
+          failed: 0,
+        });
+
+        return res.end();
+      }
+
+      const downloadFn =
+        discovered.sourceType ===
+        'google'
+          ? downloadGoogleAsset
+          : async (asset) =>
+              discovered.client.downloadOriginal(
+                asset.id
+              );
+
+      await importAssets({
+        assets:
+          discovered.assets,
+        downloadFn,
+        albumName:
+          discovered.albumName,
+        importMode,
+        mapKey:
+          discovered.mapKey,
+        sourceType:
+          discovered.sourceType,
+        sourceUrl: shareUrl,
+        targetAlbumId,
+        lang,
+        log,
+        send,
+      });
+
+      res.end();
+    } catch (err) {
+      send({
+        type: 'error',
+        message: err.message,
+      });
+
+      res.end();
+    }
   }
-});
+);
 
 // ---------- route: Google Photos ZIP import (reliable fallback) ----------
 
 const zipUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4GB - everything is buffered in memory
+  limits: {
+    fileSize: 4 * 1024 * 1024 * 1024,
+  },
 });
 
-app.post('/api/import-zip', requireSameOrigin, zipUpload.single('zipFile'), async (req, res) => {
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson; charset=utf-8',
-    'Cache-Control': 'no-cache',
-  });
-  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
-  const lang = resolveLang(req.body);
-  const log = (message) => send({ type: 'log', message });
-
-  try {
-    if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKey'));
-    if (!req.file) throw new Error(t(lang, 'noZipFile'));
-
-    const importMode = req.body.mode === 'photosOnly' ? 'photosOnly' : 'album';
-    const albumNameInput = (req.body.albumName || '').trim();
-    if (importMode === 'album' && !albumNameInput) throw new Error(t(lang, 'noAlbumName'));
-
-    log(t(lang, 'readingZip'));
-    let zip;
-    try {
-      zip = new AdmZip(req.file.buffer);
-    } catch (err) {
-      throw new Error(`ZIP: ${err.message}`);
-    }
-    const entries = zip.getEntries().filter((e) => !e.isDirectory && isMediaFile(e.entryName));
-    log(t(lang, 'zipEntriesFound', entries.length));
-
-    if (entries.length === 0) {
-      log(t(lang, 'noAssets'));
-      send({ type: 'done', created: 0, duplicates: 0, failed: 0 });
-      return res.end();
-    }
-
-    const assets = [];
-    for (const entry of entries) {
-      const buffer = entry.getData();
-      const ext = path.extname(entry.entryName).slice(1).toLowerCase();
-      const exifDate = await tryGetExifDate(buffer);
-      const zipDate = entry.header?.time ? new Date(entry.header.time).toISOString() : null;
-      assets.push({
-        id: crypto.createHash('sha1').update(entry.entryName).digest('hex').slice(0, 16),
-        originalFileName: path.basename(entry.entryName),
-        originalMimeType: MIME_TYPES[ext] || 'application/octet-stream',
-        isImage: !VIDEO_EXTENSIONS.has(ext),
-        fileCreatedAt: exifDate || zipDate,
-        _buffer: buffer,
-      });
-    }
-
-    await importAssets({
-      assets,
-      downloadFn: async (asset) => ({ buffer: asset._buffer, filename: null }),
-      albumName: albumNameInput || t(lang, 'defaultZipAlbumName'),
-      importMode,
-      mapKey: `zip::${albumNameInput.toLowerCase() || 'unnamed'}`,
-      sourceType: 'zip',
-      sourceUrl: null,
-      targetAlbumId: req.body.targetAlbumId,
-      lang,
-      log,
-      send,
+app.post(
+  '/api/import-zip',
+  requireSameOrigin,
+  zipUpload.single('zipFile'),
+  async (req, res) => {
+    res.writeHead(200, {
+      'Content-Type':
+        'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
     });
-    res.end();
-  } catch (err) {
-    send({ type: 'error', message: err.message });
-    res.end();
+
+    const send = (obj) =>
+      res.write(
+        JSON.stringify(obj) + '\n'
+      );
+
+    const lang = resolveLang(
+      req.body
+    );
+
+    const log = (message) =>
+      send({
+        type: 'log',
+        message,
+      });
+
+    try {
+      if (!ownImmichApiKey) {
+        throw new Error(
+          t(lang, 'noApiKey')
+        );
+      }
+
+      if (!req.file) {
+        throw new Error(
+          t(lang, 'noZipFile')
+        );
+      }
+
+      const importMode =
+        req.body.mode ===
+        'photosOnly'
+          ? 'photosOnly'
+          : 'album';
+
+      const albumNameInput = (
+        req.body.albumName || ''
+      ).trim();
+
+      if (
+        importMode === 'album' &&
+        !albumNameInput
+      ) {
+        throw new Error(
+          t(lang, 'noAlbumName')
+        );
+      }
+
+      log(t(lang, 'readingZip'));
+
+      let zip;
+
+      try {
+        zip = new AdmZip(
+          req.file.buffer
+        );
+      } catch (err) {
+        throw new Error(
+          `ZIP: ${err.message}`
+        );
+      }
+
+      const entries = zip
+        .getEntries()
+        .filter(
+          (e) =>
+            !e.isDirectory &&
+            isMediaFile(e.entryName)
+        );
+
+      log(
+        t(
+          lang,
+          'zipEntriesFound',
+          entries.length
+        )
+      );
+
+      if (entries.length === 0) {
+        log(t(lang, 'noAssets'));
+
+        send({
+          type: 'done',
+          created: 0,
+          duplicates: 0,
+          failed: 0,
+        });
+
+        return res.end();
+      }
+
+      const assets = [];
+
+      for (const entry of entries) {
+        const buffer =
+          entry.getData();
+
+        const ext = path
+          .extname(entry.entryName)
+          .slice(1)
+          .toLowerCase();
+
+        const exifDate =
+          await tryGetExifDate(
+            buffer
+          );
+
+        const zipDate =
+          entry.header?.time
+            ? new Date(
+                entry.header.time
+              ).toISOString()
+            : null;
+
+        assets.push({
+          id: crypto
+            .createHash('sha1')
+            .update(entry.entryName)
+            .digest('hex')
+            .slice(0, 16),
+          originalFileName:
+            path.basename(
+              entry.entryName
+            ),
+          originalMimeType:
+            MIME_TYPES[ext] ||
+            'application/octet-stream',
+          isImage:
+            !VIDEO_EXTENSIONS.has(
+              ext
+            ),
+          fileCreatedAt:
+            exifDate || zipDate,
+          _buffer: buffer,
+        });
+      }
+
+      await importAssets({
+        assets,
+        downloadFn: async (
+          asset
+        ) => ({
+          buffer:
+            asset._buffer,
+          filename: null,
+        }),
+        albumName:
+          albumNameInput ||
+          t(
+            lang,
+            'defaultZipAlbumName'
+          ),
+        importMode,
+        mapKey: `zip::${
+          albumNameInput.toLowerCase() ||
+          'unnamed'
+        }`,
+        sourceType: 'zip',
+        sourceUrl: null,
+        targetAlbumId:
+          req.body
+            .targetAlbumId,
+        lang,
+        log,
+        send,
+      });
+
+      res.end();
+    } catch (err) {
+      send({
+        type: 'error',
+        message: err.message,
+      });
+
+      res.end();
+    }
   }
-});
+);
 
 // ---------- routes: subscriptions (auto-repeat sync) ----------
 
-app.get('/api/subscriptions', async (req, res) => {
-  const subs = await readSubscriptions();
-  res.json({ subscriptions: subs });
-});
+app.get(
+  '/api/subscriptions',
+  async (req, res) => {
+    const subs =
+      await readSubscriptions();
 
-app.post('/api/subscriptions', requireSameOrigin, async (req, res) => {
-  const lang = resolveLang(req.body);
-  const { shareUrl, mode, targetAlbumId, intervalMinutes } = req.body || {};
-  if (!shareUrl) return res.status(400).json({ error: t(lang, 'noShareUrl') });
-  try {
-    assertSafeUrl(shareUrl, lang);
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
+    res.json({
+      subscriptions: subs,
+    });
   }
-  const interval = Math.max(15, Number(intervalMinutes) || 60);
-  const subs = await readSubscriptions();
-  const sub = {
-    id: crypto.randomUUID(),
-    shareUrl,
-    mode: mode === 'photosOnly' ? 'photosOnly' : 'album',
-    targetAlbumId: targetAlbumId || 'auto',
-    intervalMinutes: interval,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-    lastRun: null,
-    lastResult: null,
-  };
-  subs.push(sub);
-  await writeSubscriptions(subs);
-  res.json({ subscription: sub });
-});
+);
 
-app.patch('/api/subscriptions/:id', requireSameOrigin, async (req, res) => {
-  const subs = await readSubscriptions();
-  const sub = subs.find((s) => s.id === req.params.id);
-  if (!sub) return res.status(404).json({ error: 'not found' });
-  if (typeof req.body?.enabled === 'boolean') sub.enabled = req.body.enabled;
-  if (req.body?.intervalMinutes) sub.intervalMinutes = Math.max(15, Number(req.body.intervalMinutes));
-  await writeSubscriptions(subs);
-  res.json({ subscription: sub });
-});
+app.post(
+  '/api/subscriptions',
+  requireSameOrigin,
+  async (req, res) => {
+    const lang = resolveLang(
+      req.body
+    );
 
-app.delete('/api/subscriptions/:id', requireSameOrigin, async (req, res) => {
-  const subs = await readSubscriptions();
-  const filtered = subs.filter((s) => s.id !== req.params.id);
-  await writeSubscriptions(filtered);
-  res.json({ success: true });
-});
+    const {
+      shareUrl,
+      mode,
+      targetAlbumId,
+      intervalMinutes,
+    } = req.body || {};
 
-/** Runs one subscription's sync right now. Used both by the manual
- * "run now" button (streamed) and the background scheduler (silent). */
-async function runSubscriptionSync(sub, lang, log, send) {
-  if (!ownImmichApiKey) throw new Error(t(lang, 'noApiKeyShort'));
-  const discovered = await discoverShareContent(sub.shareUrl, null, lang, log);
-  if (discovered.assets.length === 0) {
-    send({ type: 'done', created: 0, duplicates: 0, failed: 0 });
-    return { created: 0, duplicates: 0, failed: 0 };
+    if (!shareUrl) {
+      return res
+        .status(400)
+        .json({
+          error: t(
+            lang,
+            'noShareUrl'
+          ),
+        });
+    }
+
+    try {
+      assertSafeUrl(
+        shareUrl,
+        lang
+      );
+    } catch (err) {
+      return res
+        .status(400)
+        .json({
+          error: err.message,
+        });
+    }
+
+    const interval = Math.max(
+      15,
+      Number(intervalMinutes) || 60
+    );
+
+    const subs =
+      await readSubscriptions();
+
+    const sub = {
+      id: crypto.randomUUID(),
+      shareUrl,
+      mode:
+        mode === 'photosOnly'
+          ? 'photosOnly'
+          : 'album',
+      targetAlbumId:
+        targetAlbumId || 'auto',
+      intervalMinutes:
+        interval,
+      enabled: true,
+      createdAt:
+        new Date().toISOString(),
+      lastRun: null,
+      lastResult: null,
+    };
+
+    subs.push(sub);
+
+    await writeSubscriptions(
+      subs
+    );
+
+    res.json({
+      subscription: sub,
+    });
   }
+);
+
+app.patch(
+  '/api/subscriptions/:id',
+  requireSameOrigin,
+  async (req, res) => {
+    const subs =
+      await readSubscriptions();
+
+    const sub = subs.find(
+      (s) =>
+        s.id === req.params.id
+    );
+
+    if (!sub) {
+      return res
+        .status(404)
+        .json({
+          error: 'not found',
+        });
+    }
+
+    if (
+      typeof req.body?.enabled ===
+      'boolean'
+    ) {
+      sub.enabled =
+        req.body.enabled;
+    }
+
+    if (
+      req.body?.intervalMinutes
+    ) {
+      sub.intervalMinutes =
+        Math.max(
+          15,
+          Number(
+            req.body
+              .intervalMinutes
+          )
+        );
+    }
+
+    await writeSubscriptions(
+      subs
+    );
+
+    res.json({
+      subscription: sub,
+    });
+  }
+);
+
+app.delete(
+  '/api/subscriptions/:id',
+  requireSameOrigin,
+  async (req, res) => {
+    const subs =
+      await readSubscriptions();
+
+    const filtered = subs.filter(
+      (s) =>
+        s.id !== req.params.id
+    );
+
+    await writeSubscriptions(
+      filtered
+    );
+
+    res.json({
+      success: true,
+    });
+  }
+);
+
+/**
+ * Runs one subscription's sync right now.
+ * Used both by the manual "run now" button
+ * (streamed) and the background scheduler
+ * (silent).
+ */
+async function runSubscriptionSync(
+  sub,
+  lang,
+  log,
+  send
+) {
+  if (!ownImmichApiKey) {
+    throw new Error(
+      t(lang, 'noApiKeyShort')
+    );
+  }
+
+  const discovered =
+    await discoverShareContent(
+      sub.shareUrl,
+      null,
+      lang,
+      log
+    );
+
+  if (
+    discovered.assets.length === 0
+  ) {
+    send({
+      type: 'done',
+      created: 0,
+      duplicates: 0,
+      failed: 0,
+    });
+
+    return {
+      created: 0,
+      duplicates: 0,
+      failed: 0,
+    };
+  }
+
   const downloadFn =
-    discovered.sourceType === 'google' ? downloadGoogleAsset : async (asset) => discovered.client.downloadOriginal(asset.id);
+    discovered.sourceType ===
+    'google'
+      ? downloadGoogleAsset
+      : async (asset) =>
+          discovered.client.downloadOriginal(
+            asset.id
+          );
 
-  let finalCounts = { created: 0, duplicates: 0, failed: 0 };
+  let finalCounts = {
+    created: 0,
+    duplicates: 0,
+    failed: 0,
+  };
+
   const wrappedSend = (obj) => {
-    if (obj.type === 'done') finalCounts = { created: obj.created, duplicates: obj.duplicates, failed: obj.failed };
+    if (obj.type === 'done') {
+      finalCounts = {
+        created:
+          obj.created,
+        duplicates:
+          obj.duplicates,
+        failed:
+          obj.failed,
+      };
+    }
+
     send(obj);
   };
 
   await importAssets({
-    assets: discovered.assets,
+    assets:
+      discovered.assets,
     downloadFn,
-    albumName: discovered.albumName,
+    albumName:
+      discovered.albumName,
     importMode: sub.mode,
-    mapKey: discovered.mapKey,
-    sourceType: discovered.sourceType,
+    mapKey:
+      discovered.mapKey,
+    sourceType:
+      discovered.sourceType,
     sourceUrl: sub.shareUrl,
-    targetAlbumId: sub.targetAlbumId,
+    targetAlbumId:
+      sub.targetAlbumId,
     lang,
     log,
     send: wrappedSend,
   });
+
   return finalCounts;
 }
 
-app.post('/api/subscriptions/:id/run', requireSameOrigin, async (req, res) => {
-  const lang = resolveLang(req.body);
-  const subs = await readSubscriptions();
-  const sub = subs.find((s) => s.id === req.params.id);
-  if (!sub) return res.status(404).end();
+app.post(
+  '/api/subscriptions/:id/run',
+  requireSameOrigin,
+  async (req, res) => {
+    const lang = resolveLang(
+      req.body
+    );
 
-  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache' });
-  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
-  const log = (message) => send({ type: 'log', message });
-  try {
-    const result = await runSubscriptionSync(sub, lang, log, send);
-    sub.lastRun = new Date().toISOString();
-    sub.lastResult = { ...result, error: null };
-    await writeSubscriptions(subs);
-  } catch (err) {
-    sub.lastRun = new Date().toISOString();
-    sub.lastResult = { created: 0, duplicates: 0, failed: 0, error: err.message };
-    await writeSubscriptions(subs);
-    send({ type: 'error', message: err.message });
+    const subs =
+      await readSubscriptions();
+
+    const sub = subs.find(
+      (s) =>
+        s.id === req.params.id
+    );
+
+    if (!sub) {
+      return res
+        .status(404)
+        .end();
+    }
+
+    res.writeHead(200, {
+      'Content-Type':
+        'application/x-ndjson; charset=utf-8',
+      'Cache-Control':
+        'no-cache',
+    });
+
+    const send = (obj) =>
+      res.write(
+        JSON.stringify(obj) +
+          '\n'
+      );
+
+    const log = (message) =>
+      send({
+        type: 'log',
+        message,
+      });
+
+    try {
+      const result =
+        await runSubscriptionSync(
+          sub,
+          lang,
+          log,
+          send
+        );
+
+      sub.lastRun =
+        new Date().toISOString();
+
+      sub.lastResult = {
+        ...result,
+        error: null,
+      };
+
+      await writeSubscriptions(
+        subs
+      );
+    } catch (err) {
+      sub.lastRun =
+        new Date().toISOString();
+
+      sub.lastResult = {
+        created: 0,
+        duplicates: 0,
+        failed: 0,
+        error: err.message,
+      };
+
+      await writeSubscriptions(
+        subs
+      );
+
+      send({
+        type: 'error',
+        message: err.message,
+      });
+    }
+
+    res.end();
   }
-  res.end();
-});
+);
 
 // Background scheduler: checks once a minute whether any enabled
 // subscription is due, and if so, runs it silently (console-only log).
 let schedulerRunning = false;
+
 async function checkSubscriptionsDue() {
   if (schedulerRunning) return;
+
   schedulerRunning = true;
+
   try {
-    const subs = await readSubscriptions();
+    const subs =
+      await readSubscriptions();
+
     const now = Date.now();
     let changed = false;
+
     for (const sub of subs) {
       if (!sub.enabled) continue;
-      const dueAt = sub.lastRun ? new Date(sub.lastRun).getTime() + sub.intervalMinutes * 60000 : 0;
-      if (now < dueAt) continue;
 
-      const consoleLog = (m) => console.log(`[subscription ${sub.id.slice(0, 8)}] ${m}`);
-      try {
-        const result = await runSubscriptionSync(sub, 'de', consoleLog, () => {});
-        sub.lastRun = new Date().toISOString();
-        sub.lastResult = { ...result, error: null };
-      } catch (err) {
-        sub.lastRun = new Date().toISOString();
-        sub.lastResult = { created: 0, duplicates: 0, failed: 0, error: err.message };
-        console.error(`[subscription ${sub.id.slice(0, 8)}] failed:`, err.message);
+      const dueAt = sub.lastRun
+        ? new Date(
+            sub.lastRun
+          ).getTime() +
+          sub.intervalMinutes *
+            60000
+        : 0;
+
+      if (now < dueAt) {
+        continue;
       }
+
+      const consoleLog = (m) =>
+        console.log(
+          `[subscription ${sub.id.slice(
+            0,
+            8
+          )}] ${m}`
+        );
+
+      try {
+        const result =
+          await runSubscriptionSync(
+            sub,
+            'de',
+            consoleLog,
+            () => {}
+          );
+
+        sub.lastRun =
+          new Date().toISOString();
+
+        sub.lastResult = {
+          ...result,
+          error: null,
+        };
+      } catch (err) {
+        sub.lastRun =
+          new Date().toISOString();
+
+        sub.lastResult = {
+          created: 0,
+          duplicates: 0,
+          failed: 0,
+          error: err.message,
+        };
+
+        console.error(
+          `[subscription ${sub.id.slice(
+            0,
+            8
+          )}] failed:`,
+          err.message
+        );
+      }
+
       changed = true;
     }
-    if (changed) await writeSubscriptions(subs);
+
+    if (changed) {
+      await writeSubscriptions(
+        subs
+      );
+    }
   } finally {
     schedulerRunning = false;
   }
 }
-setInterval(checkSubscriptionsDue, 60 * 1000);
 
-loadOrGenerateCredentials()
-  .then(loadApiKey)
+setInterval(
+  checkSubscriptionsDue,
+  60 * 1000
+);
+
+auth
+  .initialize()
+  .then(() => {
+    SETTINGS_ENCRYPTION_KEY_HEX =
+      auth.getEncryptionKey();
+
+    return loadApiKey();
+  })
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`Immich Album Sync running at http://localhost:${PORT}`);
-      if (!OWN_IMMICH_URL || !ownImmichApiKey) {
-        console.log('Note: Immich URL/API key not fully configured yet - open the web UI and use the Settings panel.');
+      console.log(
+        `Immich Album Sync running at http://localhost:${PORT}`
+      );
+
+      if (
+        !OWN_IMMICH_URL ||
+        !ownImmichApiKey
+      ) {
+        console.log(
+          'Note: Immich URL/API key not fully configured yet - open the web UI and use the Settings panel.'
+        );
       }
+
       checkSubscriptionsDue();
     });
   })
   .catch((err) => {
-    console.error('Startup error:', err.message);
+    console.error(
+      'Startup error:',
+      err.message
+    );
     process.exit(1);
   });
