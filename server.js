@@ -14,28 +14,73 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPPINGS_FILE = path.join(__dirname, 'data', 'album-mappings.json');
 const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
 const SUBSCRIPTIONS_FILE = path.join(__dirname, 'data', 'subscriptions.json');
+const CREDENTIALS_FILE = path.join(__dirname, 'data', 'credentials.json');
 const ENCRYPTION_ALGO = 'aes-256-gcm';
 
-const OWN_IMMICH_URL = (process.env.OWN_IMMICH_URL || '').replace(/\/+$/, '');
-const APP_USERNAME = process.env.APP_USERNAME || '';
-const APP_PASSWORD = process.env.APP_PASSWORD || '';
+// All of these can now either come from .env (for people who prefer that) OR
+// be auto-generated / set up through the web UI on first run - see
+// loadOrGenerateCredentials() and the /api/settings route further down.
+// That's what makes "docker compose up -d" with zero configuration work.
+let OWN_IMMICH_URL = (process.env.OWN_IMMICH_URL || '').replace(/\/+$/, '');
+let APP_USERNAME = process.env.APP_USERNAME || '';
+let APP_PASSWORD = process.env.APP_PASSWORD || '';
+let SETTINGS_ENCRYPTION_KEY_HEX = process.env.SETTINGS_ENCRYPTION_KEY || '';
 const HOME_ASSISTANT_WEBHOOK_URL = process.env.HOME_ASSISTANT_WEBHOOK_URL || '';
 const PORT = process.env.PORT || 3050;
 
-if (!OWN_IMMICH_URL || !APP_USERNAME || !APP_PASSWORD) {
-  console.error('Please set OWN_IMMICH_URL, APP_USERNAME and APP_PASSWORD in .env (see .env.example).');
-  process.exit(1);
-}
-if (APP_PASSWORD.length < 12) {
-  console.error('APP_PASSWORD is too short/weak. Please use at least 12 random characters.');
-  process.exit(1);
-}
-if (!/^[0-9a-fA-F]{64}$/.test(process.env.SETTINGS_ENCRYPTION_KEY || '')) {
-  console.error(
-    'Please set SETTINGS_ENCRYPTION_KEY in .env (64 hex chars / 32 bytes).\n' +
-      'Generate one with:  openssl rand -hex 32'
-  );
-  process.exit(1);
+/**
+ * First-run setup: if login credentials and/or the settings-encryption key
+ * weren't provided via .env, generate strong random ones automatically and
+ * persist them to data/credentials.json so they survive restarts. Printed
+ * to the console once, the moment they're generated.
+ */
+async function loadOrGenerateCredentials() {
+  let stored = {};
+  try {
+    stored = JSON.parse(await fs.readFile(CREDENTIALS_FILE, 'utf-8'));
+  } catch {
+    // No file yet - first run.
+  }
+
+  let changed = false;
+  if (!APP_USERNAME) {
+    APP_USERNAME = stored.username || 'admin';
+    if (!stored.username) changed = true;
+  }
+  if (!APP_PASSWORD) {
+    APP_PASSWORD = stored.password || crypto.randomBytes(16).toString('hex');
+    if (!stored.password) changed = true;
+  }
+  if (!SETTINGS_ENCRYPTION_KEY_HEX) {
+    SETTINGS_ENCRYPTION_KEY_HEX = stored.encryptionKey || crypto.randomBytes(32).toString('hex');
+    if (!stored.encryptionKey) changed = true;
+  }
+
+  if (changed) {
+    await fs.mkdir(path.dirname(CREDENTIALS_FILE), { recursive: true });
+    await fs.writeFile(
+      CREDENTIALS_FILE,
+      JSON.stringify({ username: APP_USERNAME, password: APP_PASSWORD, encryptionKey: SETTINGS_ENCRYPTION_KEY_HEX }, null, 2),
+      'utf-8'
+    );
+    await fs.chmod(CREDENTIALS_FILE, 0o600).catch(() => {});
+    console.log('========================================================');
+    console.log(' First run: generated a login for the web UI.');
+    console.log(` Username: ${APP_USERNAME}`);
+    console.log(` Password: ${APP_PASSWORD}`);
+    console.log(' Saved to data/credentials.json - keep that folder backed up,');
+    console.log(' this is shown here only once.');
+    console.log('========================================================');
+  }
+
+  if (APP_PASSWORD.length < 12) {
+    console.error('APP_PASSWORD is too short/weak. Please use at least 12 random characters.');
+    process.exit(1);
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(SETTINGS_ENCRYPTION_KEY_HEX)) {
+    console.error('SETTINGS_ENCRYPTION_KEY must be 64 hex chars / 32 bytes.');
+    process.exit(1);
+  }
 }
 
 // The Immich API key is never read from .env directly - it's set via the
@@ -134,6 +179,7 @@ const STRINGS = {
     albumCreateError: (s) => `Album anlegen fehlgeschlagen (HTTP ${s}).`,
     albumUpdateError: (s) => `Album aktualisieren fehlgeschlagen (HTTP ${s}).`,
     invalidKey: 'Bitte einen gültigen API-Key eingeben.',
+    invalidUrl: 'Bitte eine gültige http(s)-URL für deine Immich-Instanz eingeben.',
     keyRejected: (s) => `Immich hat den Key abgelehnt (HTTP ${s}). Bitte prüfen.`,
     googleDetected: 'Google-Fotos-Link erkannt (experimentell).',
     googleScrapeFailed: (m) => `Automatischer Import fehlgeschlagen: ${m}`,
@@ -178,6 +224,7 @@ const STRINGS = {
     albumCreateError: (s) => `Failed to create album (HTTP ${s}).`,
     albumUpdateError: (s) => `Failed to update album (HTTP ${s}).`,
     invalidKey: 'Please enter a valid API key.',
+    invalidUrl: 'Please enter a valid http(s) URL for your Immich instance.',
     keyRejected: (s) => `Immich rejected the key (HTTP ${s}). Please check it.`,
     googleDetected: 'Google Photos link detected (experimental).',
     googleScrapeFailed: (m) => `Automatic import failed: ${m}`,
@@ -313,7 +360,7 @@ async function writeSubscriptions(list) {
 // ---------- encrypted settings store (Immich API key) ----------
 
 function getEncryptionKey() {
-  return Buffer.from(process.env.SETTINGS_ENCRYPTION_KEY, 'hex');
+  return Buffer.from(SETTINGS_ENCRYPTION_KEY_HEX, 'hex');
 }
 function encryptSecret(plaintext) {
   const key = getEncryptionKey();
@@ -350,8 +397,24 @@ async function saveApiKey(plainKey) {
   ownImmichApiKey = plainKey;
 }
 
+async function saveOwnImmichUrl(url) {
+  const settings = await readSettings();
+  settings.ownImmichUrl = url;
+  settings.updatedAt = new Date().toISOString();
+  await writeSettings(settings);
+  OWN_IMMICH_URL = url;
+}
+
 async function loadApiKey() {
   const settings = await readSettings();
+
+  // The Immich URL itself can also come from here instead of .env, so the
+  // whole app can be started with zero configuration and set up entirely
+  // through the Settings panel afterwards.
+  if (!OWN_IMMICH_URL && settings.ownImmichUrl) {
+    OWN_IMMICH_URL = settings.ownImmichUrl;
+  }
+
   if (settings.ownImmichApiKeyEnc) {
     try {
       ownImmichApiKey = decryptSecret(settings.ownImmichApiKeyEnc);
@@ -367,8 +430,8 @@ async function loadApiKey() {
   }
 }
 
-async function verifyOwnApiKey(apiKey, lang) {
-  const res = await fetch(`${OWN_IMMICH_URL}/api/users/me`, { headers: { 'x-api-key': apiKey } });
+async function verifyOwnApiKey(url, apiKey, lang) {
+  const res = await fetch(`${url}/api/users/me`, { headers: { 'x-api-key': apiKey } });
   if (!res.ok) throw new Error(t(lang, 'keyRejected', res.status));
   const user = await res.json();
   return user.name || user.email || null;
@@ -829,16 +892,31 @@ app.get('/api/history', async (req, res) => {
 });
 
 app.post('/api/settings', requireSameOrigin, async (req, res) => {
-  const { apiKey } = req.body || {};
   const lang = resolveLang(req.body);
-  if (typeof apiKey !== 'string' || apiKey.trim().length < 10) {
+  const urlInput = (req.body?.ownImmichUrl || '').trim().replace(/\/+$/, '');
+  const apiKeyInput = (req.body?.apiKey || '').trim();
+
+  const effectiveUrl = urlInput || OWN_IMMICH_URL;
+  const effectiveKey = apiKeyInput || ownImmichApiKey;
+
+  if (!effectiveUrl) {
+    return res.status(400).json({ error: t(lang, 'invalidUrl') });
+  }
+  try {
+    const u = new URL(effectiveUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad protocol');
+  } catch {
+    return res.status(400).json({ error: t(lang, 'invalidUrl') });
+  }
+  if (!effectiveKey || effectiveKey.length < 10) {
     return res.status(400).json({ error: t(lang, 'invalidKey') });
   }
-  const trimmed = apiKey.trim();
+
   try {
-    const connectedAs = await verifyOwnApiKey(trimmed, lang);
-    await saveApiKey(trimmed);
-    res.json({ success: true, connectedAs });
+    const connectedAs = await verifyOwnApiKey(effectiveUrl, effectiveKey, lang);
+    if (urlInput) await saveOwnImmichUrl(effectiveUrl);
+    if (apiKeyInput) await saveApiKey(effectiveKey);
+    res.json({ success: true, connectedAs, ownImmichUrl: effectiveUrl });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1201,12 +1279,13 @@ async function checkSubscriptionsDue() {
 }
 setInterval(checkSubscriptionsDue, 60 * 1000);
 
-loadApiKey()
+loadOrGenerateCredentials()
+  .then(loadApiKey)
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Immich Album Sync running at http://localhost:${PORT}`);
-      if (!ownImmichApiKey) {
-        console.log('Note: no Immich API key configured yet - add one via the Settings panel in the web UI.');
+      if (!OWN_IMMICH_URL || !ownImmichApiKey) {
+        console.log('Note: Immich URL/API key not fully configured yet - open the web UI and use the Settings panel.');
       }
       checkSubscriptionsDue();
     });
