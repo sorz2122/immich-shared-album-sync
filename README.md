@@ -1,317 +1,326 @@
 # Immich Album Sync
 
-🇬🇧 [English version](README.md)
+🇩🇪 [Deutsche Version](README.de.md)
 
-Importiert ein per **Share-Link** geteiltes Immich-Album (von einem fremden
-Immich-Server, z.B. dem deines Kumpels) in deine eigene Immich-Bibliothek –
-inklusive Nachbau des Albums.
+Import a **shared Immich album link** from a friend's separate Immich server
+into your own Immich library — rebuilding the album along the way.
 
-Funktioniert ohne API-Key des anderen: es wird nur der öffentliche Share-Link
-(optional mit Passwort) benötigt.
+Works without needing the other person's API key: all it needs is the public
+share link (optionally with a password). Handy if you and a friend each run
+your own self-hosted Immich instance and want to pull a shared album into
+your own library instead of just viewing it.
+
+**Why this exists:** Immich's built-in album sharing only works between users
+on the *same* server. If a friend runs their own separate Immich instance,
+there's no native way to bring a shared album into your own library — this
+tool bridges that gap using only the public share link.
 
 ## Features
 
-- 🔗 Link einfügen, fertig – erkennt automatisch, ob es ein Immich- oder
-  Google-Fotos-Link ist
-- 🖼️ **Album übernehmen** (mit Originaltitel, Fotos wandern rein) oder
-  **📷 nur Fotos** (direkt in die Bibliothek, ohne Album)
-- 🎯 **Zielalbum-Auswahl**: schlägt automatisch ein bestehendes Album mit
-  ähnlichem Namen vor (z.B. "Spanien Urlaub 2026" ↔ "Spanien Urlaub") und
-  ergänzt dort statt ein Duplikat anzulegen – oder manuell ein beliebiges
-  bestehendes Album wählen, oder immer neu anlegen
-- 👀 **Vorschau vor dem Import**: Thumbnails, Anzahl Fotos und vorgeschlagenes
-  Zielalbum ansehen, bevor irgendetwas heruntergeladen/hochgeladen wird –
-  bei Immich-Links, Google-Fotos-Links und ZIP-Uploads gleichermaßen
-- 📊 Echter Fortschrittsbalken während des Imports, nicht nur ein Log
-- 🕘 **Verlauf**-Reiter mit alle vergangenen Importen + Ein-Klick
-  "erneut synchronisieren" (bei Immich-/Google-Quellen)
-- 🔁 **Abos**: aus jedem Immich- oder Google-Fotos-Link ein dauerhaftes Abo
-  machen, das sich selbst in einem gewählten Intervall (15 Min / stündlich /
-  alle 6h / täglich) prüft und neue Fotos automatisch nachzieht
-- 🔔 Optionale **Home-Assistant-Webhook**-Benachrichtigung nach jedem
-  abgeschlossenen Import (manuell oder per Abo)
-- 📱 Als Homescreen-App installierbar (PWA)
-- 🔁 Re-Sync-sicher: Immichs eigene Checksum-Erkennung sorgt dafür, dass ein
-  erneuter Lauf nur wirklich neue Fotos überträgt
-- 🔐 Immich API-Key wird über die Oberfläche eingetragen (maskiertes Feld),
-  gegen deine Instanz geprüft und AES-256-GCM-verschlüsselt gespeichert –
-  nie im Klartext, nie an den Browser zurückgeschickt
-- 🔒 Login-geschützt (HTTP Basic Auth), Rate-Limiting, CSRF- und
-  SSRF-gehärtet – siehe [Sicherheit](#sicherheit)
-- 🌐 Oberfläche auf Deutsch und Englisch (Umschalter oben)
-- 🐳 Fertiger `Dockerfile` + `docker-compose.yml`
+- 🔗 Paste a share link, done — no API key needed from the person sharing it
+- 🔍 **Auto-detects the source**: an Immich share link and a Google Photos
+  share link are handled automatically, no need to tell it which is which
+- 🖼️ **Import as album** — recreates the album with its original title on
+  your instance and files new photos into it, or **📷 photos only** — imports
+  everything straight into your library, no album
+- 🎯 **Target album picker**: when importing as an album, it automatically
+  suggests an existing album with a similar name (e.g. an incoming "Spain
+  Trip 2026" share matches your existing "Spain Trip" album) and adds the
+  photos there instead of creating a duplicate — or pick any existing album
+  yourself from the dropdown, or force a brand-new one every time
+- 👀 **Preview before importing**: see thumbnails, the photo count, and the
+  suggested target album before anything is downloaded or uploaded — for
+  Immich links, Google Photos links, and ZIP uploads alike
+- 📊 Live progress bar during the actual import (not just a scrolling log)
+- 🕘 **History tab** with every past import and a one-click "sync again"
+  button (for Immich/Google sources)
+- 🔁 **Subscriptions**: turn any Immich or Google Photos share link into a
+  standing subscription that re-checks itself automatically on an interval
+  you choose (15 min / hourly / every 6h / daily), no manual clicking needed
+- 🔔 Optional **Home Assistant webhook** notification after every completed
+  import (manual or subscription-triggered)
+- 📱 Installable as a home-screen app (PWA)
+- 🔁 Re-run-safe: Immich's own checksum-based dedup means running it again
+  only pulls in genuinely new photos; the target album is reused, not
+  duplicated
+- 🔐 Immich API key is entered through the UI (masked input), verified
+  against your instance, and stored AES-256-GCM-encrypted on disk — never in
+  plain text, never sent back to the browser
+- 🔒 Login-protected (HTTP Basic Auth), rate-limited, CSRF- and
+  SSRF-hardened out of the box — see [Security](#security)
+- 🌐 UI available in German and English (toggle in the top bar)
+- 🐳 Ships with a `Dockerfile` and `docker-compose.yml`
 
-## Google Fotos importieren
+## Importing from Google Photos
 
-Google hat 2025 den programmatischen Drittanbieter-Zugriff auf geteilte
-Alben stark eingeschränkt (und laut Berichten sind selbst die
-Community-Ausweichlösungen, die diese Lücke gefüllt haben, durch weitere
-Änderungen 2026 erneut kaputtgegangen). "Einfach Link einfügen" ist bei
-Google Fotos also aktuell kein zuverlässiger Weg, anders als bei Immich.
-Das Tool bietet dir beide realistischen Wege an, unter dem Reiter
-**📦 Google-Fotos-ZIP** neben dem Link-Feld:
+Google locked down third-party programmatic access to shared albums in 2025
+(and even the community scraping tools that filled the gap were reportedly
+broken again by further changes in 2026), so "just paste a link" isn't a
+fully reliable option for Google Photos the way it is for Immich. This tool
+offers both of the realistic paths, under the **📦 Google Photos ZIP** tab
+next to the link field:
 
-- **ZIP-Upload (empfohlen, robust):** Geteiltes Album im Browser öffnen, auf
-  Googles eigenen **"Alle herunterladen"**-Button klicken und die
-  entstandene ZIP-Datei hier reinziehen. Das Tool entpackt Fotos/Videos,
-  liest EXIF-Daten wo vorhanden aus (sonst Fallback auf die in der ZIP
-  gespeicherten Dateidaten) und importiert sie genau wie bei Immich – als
-  benanntes Album oder lose Fotos. Hängt an keiner Stelle von Googles API
-  oder Seitenstruktur ab, kann also nicht plötzlich kaputtgehen.
-- **Automatisches Scraping (experimentell):** Fügst du einen Google-Fotos-
-  Link ins normale Link-Feld ein, erkennt das Tool das automatisch und
-  versucht, die öffentliche Album-Seite nach einbettbaren Foto-URLs zu
-  durchsuchen. Das kann jederzeit ohne Vorwarnung aufhören zu funktionieren,
-  wenn Google die Seite ändert – bei einem Fehlschlag weist dich das Tool
-  direkt auf die ZIP-Option oben hin.
+- **ZIP upload (recommended, robust):** open the shared album in your
+  browser, click Google's own **"Download all"** button, and drop the
+  resulting ZIP file into this tool. It extracts the photos/videos, reads
+  EXIF dates where available (falling back to the file dates preserved in
+  the ZIP), and imports them exactly like an Immich share — as a named
+  album or as loose photos. This doesn't depend on Google's API or page
+  structure at all, so it isn't going to suddenly break.
+- **Automatic scraping (experimental):** if you paste a Google Photos share
+  link into the regular link field, the tool auto-detects it and attempts a
+  best-effort scrape of the public share page for embeddable photo URLs.
+  This can simply stop working at any time without warning if Google
+  changes their page — when it fails, the tool tells you so and points you
+  at the ZIP option above.
 
-## Voraussetzungen
+## Requirements
 
-- Node.js ≥ 20 (bringt `fetch`, `FormData`, `Blob` nativ mit)
-- Dein eigener Immich API-Key (Immich → Account-Einstellungen → API-Keys → "New API Key")
-- Der Freund muss beim Erstellen des Share-Links **"Download erlauben"**
-  aktiviert haben, sonst können die Originaldateien nicht geladen werden.
+- Node.js ≥ 20 (ships with native `fetch`, `FormData`, `Blob`) — or Docker
+- Your own Immich API key (Immich → Account Settings → API Keys → "New API
+  Key")
+- The friend sharing the album needs **"Allow download"** enabled on the
+  share link, otherwise the original files can't be fetched.
 
-## Einrichtung
+## Setup
 
-**Docker (empfohlen, ein einziger Befehl):**
+**Docker (recommended, one command):**
 
 ```bash
-git clone https://github.com/<du>/immich-album-sync.git
+git clone https://github.com/<you>/immich-album-sync.git
 cd immich-album-sync
 ./install.sh
 ```
 
-Das war's. Kein `.env`-Editieren, kein `openssl rand`. Das Skript baut das
-Image, startet den Container und gibt am Ende einen automatisch generierten
-Login (Benutzername + starkes Zufallspasswort) aus – das ist das einzige,
-was du dir notieren musst. Deine Immich-URL und deinen API-Key trägst du
-danach bequem im Browser ein.
+That's it. No `.env` editing, no `openssl rand` needed. The script builds
+the image, starts the container, and prints an auto-generated login
+(username + a strong random password) — that's the only thing you need to
+copy down. Everything else (your Immich URL, your API key) you set up
+afterwards in the browser.
 
-**Ohne Docker (reines Node.js ≥ 20):**
+**Without Docker (plain Node.js ≥ 20):**
 
 ```bash
 npm install
 npm start
 ```
 
-Auch hier: null Konfiguration nötig zum Starten. `http://localhost:3050`
-öffnen, die Konsole zeigt beim ersten Start den generierten Login:
+Same deal — zero configuration required to start. Open
+`http://localhost:3050`, and the console output shows your auto-generated
+login on first run:
 
 ```
 ========================================================
  First run: generated a login for the web UI.
  Username: admin
- Password: <zufällig>
+ Password: <random>
  Saved to data/credentials.json - keep that folder backed up,
  this is shown here only once.
 ========================================================
 ```
 
 <details>
-<summary>Lieber feste statt automatisch generierter Werte? (optional)</summary>
+<summary>Prefer fixed values instead of auto-generated ones? (optional)</summary>
 
-`.env.example` zu `.env` kopieren und `APP_USERNAME`, `APP_PASSWORD` und/oder
-`SETTINGS_ENCRYPTION_KEY` (`openssl rand -hex 32`) eintragen – was du dort
-setzt, wird verwendet statt automatisch generiert zu werden. Praktisch für
-automatisierte/wiederholbare Deployments, bei denen du die Zugangsdaten
-vorher kennen willst.
+Copy `.env.example` to `.env` and fill in `APP_USERNAME`, `APP_PASSWORD`
+and/or `SETTINGS_ENCRYPTION_KEY` (`openssl rand -hex 32`) — anything you set
+there is used instead of being auto-generated. Useful for scripted/repeatable
+deployments where you want to know the credentials in advance.
 
 </details>
 
-Oben rechts kannst du die Oberfläche jederzeit zwischen Deutsch und Englisch
-umschalten (Knopf "EN"/"DE" neben dem Zahnrad) – die Einstellung merkt sich
-der Browser.
+The top bar has an EN/DE toggle next to the settings gear — your browser
+remembers the choice.
 
-## Immich-Verbindung einrichten
+## Setting up your Immich connection
 
-Mit den Zugangsdaten von oben einloggen, oben rechts auf das ⚙ Zahnrad-Symbol
-klicken und ausfüllen:
+Log in with the credentials from above, click the ⚙ gear icon top-right,
+and fill in:
 
-- **Deine Immich-URL** (z.B. `https://immich.meinserver.de`)
-- **Dein Immich API-Key** (Immich → Account-Einstellungen → API-Keys →
-  "New API Key") – das Feld ist maskiert, wie ein Passwortfeld, niemand am
-  Bildschirm kann mitlesen
+- **Your Immich URL** (e.g. `https://immich.myserver.com`)
+- **Your Immich API key** (Immich → Account Settings → API Keys → "New API
+  Key") — the field is masked, like a password field, nothing shows on
+  screen while typing
 
-Auf "Speichern & prüfen" klicken. Beides wird live gegen deine Immich-
-Instanz getestet (du siehst "verbunden als ...") und erst danach
-gespeichert – die URL im Klartext (nicht sensibel), der API-Key
-**verschlüsselt** (AES-256-GCM) in `data/settings.json`. Der Klartext des
-Keys existiert nur kurz im Arbeitsspeicher des Servers, nie auf der Platte
-und nie wieder im Browser. Zum Ändern einfach neue Werte eintragen und
-erneut speichern.
+Click "Save & verify". Both are tested live against your Immich instance
+(you'll see "connected as ...") and only then stored — the URL in plain
+text (it's not sensitive), the API key **encrypted** (AES-256-GCM) in
+`data/settings.json`. The key's plaintext only ever lives briefly in the
+server's memory, never on disk, never sent back to the browser again. To
+change either, just enter new values and save again.
 
-## Nutzung
+## Usage
 
-1. Kompletten Share-Link vom Kumpel einfügen (`https://.../share/...`).
-2. Falls das Album passwortgeschützt ist: Passwort mit eintragen.
-3. Import-Art wählen:
-   - **🖼️ Album übernehmen** (Standard): legt bei dir ein Album mit dem Titel
-     des geteilten Albums an (oder aktualisiert es) und ordnet alle Fotos dort ein.
-   - **📷 Nur Fotos**: importiert alle Fotos direkt in deine Bibliothek, ohne
-     ein Album anzulegen.
-4. Bei "Album übernehmen" zusätzlich ein **Zielalbum** wählen:
-   - **🔎 Automatisch** (Standard): schlägt automatisch ein bestehendes Album
-     mit ähnlichem Namen vor (z.B. wird ein geteiltes "Spanien Urlaub 2026"
-     erkannt und in dein vorhandenes "Spanien Urlaub" eingeordnet statt ein
-     Duplikat anzulegen) – findet sich nichts Passendes, wird neu angelegt.
-   - Ein **bestimmtes bestehendes Album** aus der Liste auswählen, um dort
-     unabhängig vom Namen einzusortieren.
-   - **🆕 Immer neues Album anlegen**, um die automatische Erkennung zu
-     überstimmen.
-5. Klick auf "Import starten". Fortschritt wird live angezeigt.
+1. Paste the full share link from your friend (`https://.../share/...`).
+2. If the album is password-protected, enter the password too.
+3. Choose the import mode:
+   - **🖼️ Import as album** (default): creates an album on your instance
+     with the shared album's title (or updates it) and files all photos into
+     it.
+   - **📷 Photos only**: imports every photo straight into your library, no
+     album created.
+4. Click "Start import". Progress streams live.
 
-Beim erneuten Ausführen mit demselben Link werden nur **neue** Fotos
-übertragen – bereits importierte Assets erkennt Immich selbst anhand der
-Prüfsumme und überspringt sie. Das Zielalbum wird dabei wiederverwendet statt
-erneut angelegt (Zuordnung liegt lokal in `data/album-mappings.json`).
+Running it again on the same link only transfers **new** photos — Immich's
+own checksum matching detects and skips anything already imported. The
+target album is reused instead of being recreated (the mapping lives locally
+in `data/album-mappings.json`).
 
-## Abos (automatischer Wiederhol-Sync)
+## Subscriptions (auto-repeat sync)
 
-Im Reiter **🔁 Abos** einen beliebigen Immich- oder Google-Fotos-Link
-einfügen, Modus/Zielalbum wählen und ein Intervall festlegen. Das Tool prüft
-im Hintergrund einmal pro Minute, ob ein Abo fällig ist, und führt es dann
-still aus – kein Browser-Tab muss offen bleiben, es läuft, solange der
-Container/Prozess läuft. Jedes Abo merkt sich direkt in der Liste den
-letzten Lauf-Zeitpunkt und das Ergebnis (oder den Fehler) und lässt sich
-jederzeit pausieren oder löschen.
+Under the **🔁 Subscriptions** tab, paste any Immich or Google Photos share
+link, pick a mode/target album, and choose an interval. The app checks once
+a minute in the background whether any subscription is due and, if so, runs
+it silently — no browser tab needs to stay open, it runs as long as the
+container/process is running. Each subscription remembers its last run time
+and result (or error) right there in the list, and can be paused or deleted
+at any time.
 
-## Home-Assistant-Benachrichtigungen
+## Home Assistant notifications
 
-`HOME_ASSISTANT_WEBHOOK_URL` in der `.env` auf eine Home-Assistant-Webhook-
-URL setzen (Einstellungen → Automatisierungen → neue Automatisierung mit
-Trigger **Webhook** anlegen, URL kopieren) und das Tool schickt nach jedem
-abgeschlossenen Import (manuell oder per Abo) einen kleinen JSON-Payload
+Set `HOME_ASSISTANT_WEBHOOK_URL` in `.env` to a Home Assistant webhook URL
+(Settings → Automations → create one with a **Webhook** trigger, copy its
+URL) and the tool will POST a small JSON payload
 (`{ event: "immich_album_sync_completed", albumName, created, duplicates,
-failed, ... }`) dorthin. Leer lassen, um das komplett zu deaktivieren.
+failed, ... }`) to it after every completed import — manual or via a
+subscription. Leave it empty to disable this entirely.
 
-## Deployment als Docker Container / TrueNAS Custom App
+## Deploying as a Docker container / TrueNAS Custom App
 
-Im Projekt liegen dafür bereits `Dockerfile`, `docker-compose.yml` und `install.sh`.
+The project ships with a `Dockerfile`, `docker-compose.yml` and `install.sh`.
 
-### 1. Ordner auf die TrueNAS legen
+### 1. Create a folder on your server
 
-Z. B. unter `/mnt/<pool>/apps/immich-album-sync/` den kompletten Projektordner
-ablegen und dort einen Unterordner `data/` anlegen (falls nicht schon
-vorhanden) – dort landen der automatisch generierte Login, der
-Verschlüsselungs-Key, deine Einstellungen und der Sync-Verlauf.
+E.g. `/mnt/<pool>/apps/immich-album-sync/`, place the whole project there,
+and create a `data/` subfolder (if not already present) — this is where the
+auto-generated login, encryption key, your settings and sync history all
+get persisted.
 
-Der Container läuft absichtlich **nicht als root**, sondern als der im
-`node`-Image eingebaute User mit UID/GID `1000`. Damit er in den gemounteten
-`data`-Ordner schreiben darf, dessen Besitzer passend setzen:
+The container deliberately does **not** run as root — it runs as the `node`
+image's built-in user, UID/GID `1000`. For it to be able to write into the
+mounted `data` folder, set the ownership accordingly:
 
 ```bash
 chown -R 1000:1000 /mnt/<pool>/apps/immich-album-sync/data
 ```
 
-(Sonst gibt's beim allerersten Start einen "permission denied", weil die
-generierten Zugangsdaten nicht gespeichert werden können.)
+(Otherwise you'll get a "permission denied" the first time it tries to
+write its auto-generated credentials.)
 
-### 2a. Ein Befehl (am einfachsten)
+### 2a. One command (simplest)
 
-Auf der TrueNAS-Shell (TrueNAS SCALE hat eine eingebaute Web-Shell direkt in
-der Oberfläche – kein separater SSH-Client nötig, oben rechts auf das
-Terminal-Symbol klicken), im Projektordner:
+On your server's shell (TrueNAS SCALE has a built-in web shell — no
+separate SSH client needed, click the terminal icon top-right in the UI),
+from inside the project folder:
 
 ```bash
 ./install.sh
 ```
 
-Baut das Image, startet den Container per `docker compose` und gibt am Ende
-deinen automatisch generierten Login aus. Das Tool ist danach unter
-`http://<truenas-ip>:3050` erreichbar – ganz ohne `docker-compose.yml` zu
-bearbeiten.
+Builds the image, starts the container via `docker compose`, and prints
+your auto-generated login at the end. The tool is then reachable at
+`http://<server-ip>:3050` — no `docker-compose.yml` editing needed at all.
 
-### 2b. Manuell per docker compose
+### 2b. Manual docker compose
 
 ```bash
 docker build -t immich-album-sync:latest .
 docker compose up -d
-docker compose logs   # zeigt beim ersten Start den generierten Login
+docker compose logs   # shows the auto-generated login on first run
 ```
 
-`docker-compose.yml` musst du nur anfassen, wenn du bewusst feste statt
-automatisch generierter Zugangsdaten willst (siehe den auskommentierten
-`environment:`-Block in der Datei).
+Only edit `docker-compose.yml` if you specifically want fixed credentials
+instead of auto-generated ones (see the commented-out `environment:` block
+in that file).
 
-### 2c. Als TrueNAS SCALE "Custom App"
+### 2c. As a TrueNAS SCALE "Custom App"
 
-1. Das Image einmal per Shell bauen (Schritt 2a oder 2b oben).
-2. Apps → Discover Apps → **Custom App** (bzw. "Install via YAML", je nach
-   SCALE-Version).
-3. Falls es ein Image-Feld verlangt: `immich-album-sync` als Repository und
-   `latest` als Tag eintragen, **Pull Policy auf "Never"/"IfNotPresent"**
-   stellen (das Image liegt ja schon lokal – es wird nicht aus einer
-   Registry gezogen).
-4. Volume von deinem TrueNAS-Datensatz auf `/app/data` mappen, z. B.:
+1. Build the image once via the shell (step 2a or 2b above).
+2. Apps → Discover Apps → **Custom App** (or "Install via YAML", depending
+   on your SCALE version).
+3. If it asks for an image field: enter `immich-album-sync` as the
+   repository and `latest` as the tag, and set **Pull Policy to
+   "Never"/"IfNotPresent"** (the image is already local — it won't be
+   pulled from a registry).
+4. Map a volume from your TrueNAS dataset to `/app/data`, e.g.:
    ```yaml
    volumes:
      - /mnt/<pool>/apps/immich-album-sync/data:/app/data
    ```
-5. Port `3050` (oder einen von dir gewählten Host-Port) freigeben,
-   Umgebungsvariablen leer lassen, außer du willst feste Zugangsdaten.
-6. Deployen – einmal in die Container-Logs schauen für den generierten
-   Login, dann `http://<truenas-ip>:<port>` öffnen.
+5. Expose port `3050` (or a host port of your choice), leave environment
+   variables empty unless you want fixed credentials.
+6. Deploy — check the container logs once for the auto-generated login,
+   then open `http://<server-ip>:<port>`.
 
-### Update / Neubau nach Codeänderungen
+### Updating after code changes
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-## Sicherheit
+## Security
 
-Das Tool ist jetzt gegen Fremdzugriff abgesichert:
+The tool is hardened against unauthorized access out of the box:
 
-- **HTTP Basic Auth** vor der kompletten App. Standardmäßig wird beim ersten
-  Start ein starkes Zufalls-Login generiert und in `data/credentials.json`
-  gespeichert (einmalig in der Konsole/den Logs angezeigt) – oder du setzt
-  `APP_USERNAME`/`APP_PASSWORD` selbst in der `.env`, falls du feste Werte
-  willst. Ohne gültige Zugangsdaten kann niemand die Oberfläche öffnen oder
-  die API ansprechen.
-- **Rate-Limiting** (30 Versuche / 10 Min pro IP) gegen Durchprobieren des Passworts.
-- **CSRF-Schutz**: Requests, die erkennbar von einer fremden Seite ausgelöst wurden
-  (`Sec-Fetch-Site: cross-site`), werden abgelehnt – relevant, weil Browser
-  Basic-Auth-Zugangsdaten sonst automatisch pro Origin mitschicken, auch wenn eine
-  andere geöffnete Seite den Request auslöst.
-- **SSRF-Schutz**: Share-Links, die auf `localhost`, `127.0.0.1`, `192.168.x.x`,
-  `10.x.x.x`, `172.16-31.x.x` oder Link-Local-Adressen zeigen, werden abgelehnt,
-  damit niemand das Tool missbrauchen kann, um interne Adressen abzufragen.
-  Das prüft nur den im Link angegebenen Hostnamen selbst (DNS-Rebinding auf eine
-  interne IP wird dadurch nicht zu 100% verhindert) – der eigentliche Schutz davor
-  ist, dass die Route ohnehin nur mit gültigem Login erreichbar ist.
-- Dein Immich API-Key liegt **nicht mehr in der `.env`**, sondern wird über
-  die Einstellungen im Frontend eingetragen (maskiertes Feld, wie ein
-  Passwortfeld) und AES-256-GCM-verschlüsselt in `data/settings.json`
-  abgelegt. Der Schlüssel dazu (`SETTINGS_ENCRYPTION_KEY`) liegt separat in
-  der `.env` – ohne den lässt sich die Datei nicht entschlüsseln. An den
-  Browser wird der Key nie zurückgeschickt, auch nicht nach dem Speichern.
+- **HTTP Basic Auth** in front of the entire app. By default, a strong
+  random username/password is auto-generated on first run and stored in
+  `data/credentials.json` (shown once in the console/logs) — or set
+  `APP_USERNAME`/`APP_PASSWORD` in `.env` yourself if you prefer fixed
+  values. Without valid credentials, nobody can open the UI or call the API.
+  the UI or call the API.
+- **Rate limiting** (30 attempts / 10 min per IP) against password
+  guessing.
+- **CSRF protection**: requests that are clearly triggered from a foreign
+  page (`Sec-Fetch-Site: cross-site`) are rejected — relevant because
+  browsers otherwise attach cached Basic Auth credentials automatically per
+  origin, regardless of which page actually triggered the request.
+- **SSRF protection**: share links pointing at `localhost`, `127.0.0.1`,
+  `192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`, or link-local addresses are
+  rejected, so the tool can't be abused to probe internal addresses. This
+  only checks the hostname given in the link itself (it doesn't fully
+  prevent DNS rebinding to an internal IP) — the actual backstop is that the
+  route is only reachable with a valid login in the first place.
+- Your Immich API key **never lives in `.env`** — it's entered through the
+  Settings panel in the UI (masked field, like a password field) and stored
+  AES-256-GCM-encrypted in `data/settings.json`. The key used to encrypt it
+  (`SETTINGS_ENCRYPTION_KEY`) lives separately in `.env` — without it, the
+  file can't be decrypted. The key itself is never sent back to the
+  browser, not even after saving.
 
-**Zusätzlich empfohlen, wenn das Tool über dein LAN hinaus erreichbar sein soll:**
+**Additionally recommended if this needs to be reachable beyond your LAN:**
 
-- Nur über einen Reverse-Proxy mit **HTTPS** betreiben (Basic Auth schickt die
-  Zugangsdaten sonst unverschlüsselt).
-- `.env` mit `chmod 600 .env` vor anderen Nutzern auf dem Server schützen.
-- Idealerweise gar nicht öffentlich exposen, sondern nur per VPN/LAN erreichbar
-  machen.
+- Only run it behind a reverse proxy with **HTTPS** (Basic Auth otherwise
+  sends credentials unencrypted).
+- Lock down `.env` with `chmod 600 .env` from other users on the server.
+- Ideally don't expose it publicly at all — keep it reachable only via
+  VPN/LAN.
 
-## Grenzen
+## Limitations
 
-- Personen-/Gesichtserkennung, Alben-Kommentare u.ä. werden nicht mit
-  übertragen – nur die Originaldateien inkl. EXIF-Daten und das Album selbst.
-- Videos können je nach Größe etwas dauern, da sie komplett im Arbeitsspeicher
-  gepuffert werden, bevor sie hochgeladen werden.
-- Falls der Freund den Share-Link löscht oder das Ablaufdatum erreicht ist,
-  funktioniert der erneute Sync nicht mehr.
-- Beim automatischen Google-Fotos-Scraping gehen Originaldateiname und
-  Aufnahmedatum verloren (Google liefert dort keine Metadaten mit) – beim
-  ZIP-Import bleiben beide meist erhalten.
+- Face/people recognition, album comments, etc. are not transferred — only
+  the original files (with EXIF data intact) and the album itself.
+- Large videos can take a while, since they're fully buffered in memory
+  before being uploaded.
+- If the friend deletes the share link or it expires, re-syncing will stop
+  working.
+- With the automatic Google Photos scraper, original filenames and capture
+  dates are lost (Google doesn't expose that metadata there) — the ZIP
+  import path preserves both in most cases.
+
+## Contributing
+
+Issues and pull requests are welcome. This started as a small personal tool,
+so expect some rough edges — bug reports with your Immich server version are
+especially helpful.
+
+## License
+
+MIT
 
 ---
 
-Das Immich-Logo (`public/immich-logo.svg`) gehört dem
-[Immich](https://github.com/immich-app/immich)-Projekt und wird hier nur zur
-Kompatibilitäts-Kennzeichnung verwendet. Dies ist ein inoffizielles,
-community-gebautes Tool ohne Zugehörigkeit zum oder Unterstützung durch das
-Immich-Projekt.
+The Immich logo (`public/immich-logo.svg`) is the property of the
+[Immich](https://github.com/immich-app/immich) project, used here only to
+identify compatibility. This is an unofficial, community-built tool and is
+not affiliated with or endorsed by the Immich project.
