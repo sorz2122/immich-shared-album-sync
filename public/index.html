@@ -477,6 +477,9 @@
   <p class="sub" id="subtitle">Geteilten Immich-Album-Link eines Freundes in deine eigene Bibliothek importieren.</p>
 
   <div class="panel settings-panel" id="settingsPanel">
+    <label for="ownUrlInput" id="ownUrlLabel">Deine Immich-URL</label>
+    <input type="text" id="ownUrlInput" placeholder="https://immich.meinserver.de" autocomplete="off" />
+
     <label for="apiKeyInput" id="apiKeyLabel">Dein Immich API-Key (für deine eigene Instanz)</label>
     <input type="password" id="apiKeyInput" placeholder="API-Key einfügen" autocomplete="off" />
     <p class="hint" id="apiKeyHint">Wird beim Speichern gegen deine Immich-Instanz geprüft und verschlüsselt abgelegt – nie im Klartext sichtbar, auch nicht nach dem Speichern.</p>
@@ -655,6 +658,8 @@
     de: {
       subtitle: 'Geteilten Immich-Album-Link eines Freundes in deine eigene Bibliothek importieren.',
       apiKeyLabel: 'Dein Immich API-Key (für deine eigene Instanz)',
+      ownUrlLabel: 'Deine Immich-URL',
+      ownUrlPlaceholder: 'https://immich.meinserver.de',
       apiKeyPlaceholder: 'API-Key einfügen',
       apiKeyPlaceholderSet: '•••••••••• (hinterlegt – zum Ändern neuen Key eingeben)',
       apiKeyHint: 'Wird beim Speichern gegen deine Immich-Instanz geprüft und verschlüsselt abgelegt – nie im Klartext sichtbar, auch nicht nach dem Speichern.',
@@ -734,6 +739,8 @@
     en: {
       subtitle: "Import a friend's shared Immich album link into your own library.",
       apiKeyLabel: 'Your Immich API key (for your own instance)',
+      ownUrlLabel: 'Your Immich URL',
+      ownUrlPlaceholder: 'https://immich.myserver.com',
       apiKeyPlaceholder: 'Paste API key',
       apiKeyPlaceholderSet: '•••••••••• (saved – enter a new key to change it)',
       apiKeyHint: 'Verified against your Immich instance on save, then stored encrypted — never shown in plain text again, even after saving.',
@@ -819,6 +826,8 @@
     document.documentElement.lang = lang;
     document.getElementById('subtitle').textContent = tr.subtitle;
     document.getElementById('apiKeyLabel').textContent = tr.apiKeyLabel;
+    document.getElementById('ownUrlLabel').textContent = tr.ownUrlLabel;
+    ownUrlInput.placeholder = tr.ownUrlPlaceholder;
     document.getElementById('apiKeyHint').textContent = tr.apiKeyHint;
     document.getElementById('saveKeyBtn').textContent = tr.saveKeyBtn;
     document.getElementById('importHint').textContent = tr.importHint;
@@ -887,6 +896,7 @@
   const gearBtn = document.getElementById('gearBtn');
   const langBtn = document.getElementById('langBtn');
   const settingsPanel = document.getElementById('settingsPanel');
+  const ownUrlInput = document.getElementById('ownUrlInput');
   const apiKeyInput = document.getElementById('apiKeyInput');
   const saveKeyBtn = document.getElementById('saveKeyBtn');
   const settingsStatus = document.getElementById('settingsStatus');
@@ -1246,7 +1256,9 @@
       const res = await fetch('/api/settings');
       const data = await res.json();
       apiKeyInput.dataset.set = data.apiKeySet ? 'true' : 'false';
-      if (data.apiKeySet) {
+      if (data.ownImmichUrl && !ownUrlInput.value) ownUrlInput.value = data.ownImmichUrl;
+      const fullyConfigured = data.apiKeySet && !!data.ownImmichUrl;
+      if (fullyConfigured) {
         submitBtn.disabled = false;
         importHint.style.display = 'none';
         loadOwnAlbums();
@@ -1262,8 +1274,9 @@
   }
 
   saveKeyBtn.addEventListener('click', async () => {
-    const value = apiKeyInput.value.trim();
-    if (!value) return;
+    const urlValue = ownUrlInput.value.trim();
+    const keyValue = apiKeyInput.value.trim();
+    if (!urlValue && !keyValue) return;
     const tr = translations[lang];
     saveKeyBtn.disabled = true;
     saveKeyBtn.textContent = tr.saveKeyBtnBusy;
@@ -1274,11 +1287,12 @@
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: value, lang }),
+        body: JSON.stringify({ ownImmichUrl: urlValue || undefined, apiKey: keyValue || undefined, lang }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Unknown error');
 
+      if (data.ownImmichUrl) ownUrlInput.value = data.ownImmichUrl;
       apiKeyInput.value = '';
       apiKeyInput.dataset.set = 'true';
       apiKeyInput.placeholder = tr.apiKeyPlaceholderSet;
