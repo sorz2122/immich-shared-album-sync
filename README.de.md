@@ -74,46 +74,72 @@ Das Tool bietet dir beide realistischen Wege an, unter dem Reiter
 
 ## Einrichtung
 
+**Docker (empfohlen, ein einziger Befehl):**
+
+```bash
+git clone https://github.com/<du>/immich-album-sync.git
+cd immich-album-sync
+./install.sh
+```
+
+Das war's. Kein `.env`-Editieren, kein `openssl rand`. Das Skript baut das
+Image, startet den Container und gibt am Ende einen automatisch generierten
+Login (Benutzername + starkes Zufallspasswort) aus – das ist das einzige,
+was du dir notieren musst. Deine Immich-URL und deinen API-Key trägst du
+danach bequem im Browser ein.
+
+**Ohne Docker (reines Node.js ≥ 20):**
+
 ```bash
 npm install
-cp .env.example .env
-```
-
-`.env` öffnen und ausfüllen:
-
-```
-OWN_IMMICH_URL=https://immich.meinserver.de
-APP_USERNAME=theo
-APP_PASSWORD=bitte-ein-langes-zufaelliges-passwort-setzen
-SETTINGS_ENCRYPTION_KEY=   # mit `openssl rand -hex 32` erzeugen
-PORT=3050
-```
-
-Deinen Immich API-Key trägst du **nicht** in die `.env` ein, sondern nach dem
-ersten Start bequem in der Weboberfläche (siehe unten) – dort wird er
-verschlüsselt gespeichert.
-
-Starten:
-
-```bash
 npm start
 ```
 
-Dann im Browser `http://localhost:3050` öffnen (bzw. die IP/den Hostname
-deines Servers, falls du es z.B. auf der TrueNAS laufen lässt). Oben rechts
-kannst du die Oberfläche jederzeit zwischen Deutsch und Englisch umschalten
-(Knopf "EN"/"DE" neben dem Zahnrad) – die Einstellung merkt sich der Browser.
+Auch hier: null Konfiguration nötig zum Starten. `http://localhost:3050`
+öffnen, die Konsole zeigt beim ersten Start den generierten Login:
 
-## Immich API-Key hinterlegen
+```
+========================================================
+ First run: generated a login for the web UI.
+ Username: admin
+ Password: <zufällig>
+ Saved to data/credentials.json - keep that folder backed up,
+ this is shown here only once.
+========================================================
+```
 
-Oben rechts auf das ⚙ Zahnrad-Symbol klicken, API-Key einfügen (Feld ist
-maskiert, wie ein Passwortfeld – niemand am Bildschirm kann ihn mitlesen) und
-auf "Speichern & prüfen" klicken. Der Key wird dabei live gegen deine
-Immich-Instanz getestet (du siehst "verbunden als ...") und erst danach
-**verschlüsselt** (AES-256-GCM) in `data/settings.json` abgelegt – der
-Klartext existiert nur kurz im Arbeitsspeicher des Servers, nie auf der
-Platte und nie wieder im Browser. Zum Ändern einfach einen neuen Key
-eintragen und erneut speichern.
+<details>
+<summary>Lieber feste statt automatisch generierter Werte? (optional)</summary>
+
+`.env.example` zu `.env` kopieren und `APP_USERNAME`, `APP_PASSWORD` und/oder
+`SETTINGS_ENCRYPTION_KEY` (`openssl rand -hex 32`) eintragen – was du dort
+setzt, wird verwendet statt automatisch generiert zu werden. Praktisch für
+automatisierte/wiederholbare Deployments, bei denen du die Zugangsdaten
+vorher kennen willst.
+
+</details>
+
+Oben rechts kannst du die Oberfläche jederzeit zwischen Deutsch und Englisch
+umschalten (Knopf "EN"/"DE" neben dem Zahnrad) – die Einstellung merkt sich
+der Browser.
+
+## Immich-Verbindung einrichten
+
+Mit den Zugangsdaten von oben einloggen, oben rechts auf das ⚙ Zahnrad-Symbol
+klicken und ausfüllen:
+
+- **Deine Immich-URL** (z.B. `https://immich.meinserver.de`)
+- **Dein Immich API-Key** (Immich → Account-Einstellungen → API-Keys →
+  "New API Key") – das Feld ist maskiert, wie ein Passwortfeld, niemand am
+  Bildschirm kann mitlesen
+
+Auf "Speichern & prüfen" klicken. Beides wird live gegen deine Immich-
+Instanz getestet (du siehst "verbunden als ...") und erst danach
+gespeichert – die URL im Klartext (nicht sensibel), der API-Key
+**verschlüsselt** (AES-256-GCM) in `data/settings.json`. Der Klartext des
+Keys existiert nur kurz im Arbeitsspeicher des Servers, nie auf der Platte
+und nie wieder im Browser. Zum Ändern einfach neue Werte eintragen und
+erneut speichern.
 
 ## Nutzung
 
@@ -161,13 +187,14 @@ failed, ... }`) dorthin. Leer lassen, um das komplett zu deaktivieren.
 
 ## Deployment als Docker Container / TrueNAS Custom App
 
-Im Projekt liegen dafür bereits `Dockerfile` und `docker-compose.yml`.
+Im Projekt liegen dafür bereits `Dockerfile`, `docker-compose.yml` und `install.sh`.
 
 ### 1. Ordner auf die TrueNAS legen
 
 Z. B. unter `/mnt/<pool>/apps/immich-album-sync/` den kompletten Projektordner
-ablegen und dort einen Unterordner `data/` für die persistente Album-Zuordnung
-anlegen (falls nicht schon vorhanden).
+ablegen und dort einen Unterordner `data/` anlegen (falls nicht schon
+vorhanden) – dort landen der automatisch generierte Login, der
+Verschlüsselungs-Key, deine Einstellungen und der Sync-Verlauf.
 
 Der Container läuft absichtlich **nicht als root**, sondern als der im
 `node`-Image eingebaute User mit UID/GID `1000`. Damit er in den gemounteten
@@ -177,53 +204,54 @@ Der Container läuft absichtlich **nicht als root**, sondern als der im
 chown -R 1000:1000 /mnt/<pool>/apps/immich-album-sync/data
 ```
 
-(Sonst gibt's beim Sync einen "permission denied" beim Schreiben der
-Album-Zuordnung.)
+(Sonst gibt's beim allerersten Start einen "permission denied", weil die
+generierten Zugangsdaten nicht gespeichert werden können.)
 
-### 2. Image bauen
+### 2a. Ein Befehl (am einfachsten)
 
-Auf der TrueNAS-Shell (SSH) im Projektordner:
+Auf der TrueNAS-Shell (TrueNAS SCALE hat eine eingebaute Web-Shell direkt in
+der Oberfläche – kein separater SSH-Client nötig, oben rechts auf das
+Terminal-Symbol klicken), im Projektordner:
+
+```bash
+./install.sh
+```
+
+Baut das Image, startet den Container per `docker compose` und gibt am Ende
+deinen automatisch generierten Login aus. Das Tool ist danach unter
+`http://<truenas-ip>:3050` erreichbar – ganz ohne `docker-compose.yml` zu
+bearbeiten.
+
+### 2b. Manuell per docker compose
 
 ```bash
 docker build -t immich-album-sync:latest .
-```
-
-### 3a. Starten via docker compose (am einfachsten)
-
-`docker-compose.yml` vorher öffnen und die Platzhalter unter `environment:`
-durch deine echten Werte ersetzen (`OWN_IMMICH_URL`, `APP_USERNAME`,
-`APP_PASSWORD`, `SETTINGS_ENCRYPTION_KEY` – Letzteren mit
-`openssl rand -hex 32` erzeugen). Den Immich API-Key trägst du danach in der
-Weboberfläche unter "Einstellungen" ein, nicht hier. Danach:
-
-```bash
 docker compose up -d
+docker compose logs   # zeigt beim ersten Start den generierten Login
 ```
 
-Das Tool ist dann unter `http://<truenas-ip>:3050` erreichbar.
+`docker-compose.yml` musst du nur anfassen, wenn du bewusst feste statt
+automatisch generierter Zugangsdaten willst (siehe den auskommentierten
+`environment:`-Block in der Datei).
 
-### 3b. Als TrueNAS SCALE "Custom App"
+### 2c. Als TrueNAS SCALE "Custom App"
 
-1. Apps → Discover Apps → **Custom App** (bzw. "Install via YAML", je nach
+1. Das Image einmal per Shell bauen (Schritt 2a oder 2b oben).
+2. Apps → Discover Apps → **Custom App** (bzw. "Install via YAML", je nach
    SCALE-Version).
-2. Falls es ein Image-Feld verlangt: `immich-album-sync` als Repository und
+3. Falls es ein Image-Feld verlangt: `immich-album-sync` als Repository und
    `latest` als Tag eintragen, **Pull Policy auf "Never"/"IfNotPresent"**
-   stellen (das Image liegt ja schon lokal aus Schritt 2 – es wird nicht aus
-   einer Registry gezogen).
-3. Falls die App den Inhalt von `docker-compose.yml` direkt per YAML-Editor
-   annimmt: den Inhalt der Datei einfügen (mit ausgefüllten Umgebungsvariablen
-   statt der Platzhalter) und den Volume-Pfad `./data` durch den echten
-   TrueNAS-Datensatzpfad ersetzen, z. B.:
+   stellen (das Image liegt ja schon lokal – es wird nicht aus einer
+   Registry gezogen).
+4. Volume von deinem TrueNAS-Datensatz auf `/app/data` mappen, z. B.:
    ```yaml
    volumes:
      - /mnt/<pool>/apps/immich-album-sync/data:/app/data
    ```
-4. Port `3050` (oder einen von dir gewählten Host-Port) freigeben.
-5. Deployen – die Oberfläche ist danach unter `http://<truenas-ip>:<port>`
-   erreichbar, geschützt durch den Login aus `APP_USERNAME`/`APP_PASSWORD`.
-
-**Hinweis:** Trag echte Zugangsdaten nur in die lokale `docker-compose.yml`
-bzw. direkt ins TrueNAS-Formular ein – nicht in ein Git-Repo committen.
+5. Port `3050` (oder einen von dir gewählten Host-Port) freigeben,
+   Umgebungsvariablen leer lassen, außer du willst feste Zugangsdaten.
+6. Deployen – einmal in die Container-Logs schauen für den generierten
+   Login, dann `http://<truenas-ip>:<port>` öffnen.
 
 ### Update / Neubau nach Codeänderungen
 
@@ -236,8 +264,12 @@ docker compose up -d
 
 Das Tool ist jetzt gegen Fremdzugriff abgesichert:
 
-- **HTTP Basic Auth** vor der kompletten App (Zugangsdaten `APP_USERNAME`/`APP_PASSWORD`
-  in `.env`). Ohne die kann niemand die Oberfläche öffnen oder die API ansprechen.
+- **HTTP Basic Auth** vor der kompletten App. Standardmäßig wird beim ersten
+  Start ein starkes Zufalls-Login generiert und in `data/credentials.json`
+  gespeichert (einmalig in der Konsole/den Logs angezeigt) – oder du setzt
+  `APP_USERNAME`/`APP_PASSWORD` selbst in der `.env`, falls du feste Werte
+  willst. Ohne gültige Zugangsdaten kann niemand die Oberfläche öffnen oder
+  die API ansprechen.
 - **Rate-Limiting** (30 Versuche / 10 Min pro IP) gegen Durchprobieren des Passworts.
 - **CSRF-Schutz**: Requests, die erkennbar von einer fremden Seite ausgelöst wurden
   (`Sec-Fetch-Site: cross-site`), werden abgelehnt – relevant, weil Browser
