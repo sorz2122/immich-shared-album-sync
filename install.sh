@@ -1,40 +1,32 @@
 #!/bin/bash
-# One-command setup: builds the image, starts the container, and prints the
-# auto-generated login once it's ready. Run this from inside the project
-# folder (where this file, the Dockerfile and docker-compose.yml live).
-set -e
+set -euo pipefail
 
 echo "== Immich Album Sync - Setup =="
 
-if ! command -v docker &> /dev/null; then
+if ! command -v docker >/dev/null 2>&1; then
   echo "Docker wurde nicht gefunden. Bitte Docker installieren und erneut versuchen."
-  echo "(Alternativ: npm install && npm start, siehe README.md)"
   exit 1
 fi
 
-mkdir -p data
-
-echo "-> Baue das Docker-Image..."
-docker build -t immich-album-sync:latest .
-
-echo "-> Starte den Container..."
-if docker compose version &> /dev/null; then
-  docker compose up -d
-  LOGS_CMD="docker compose logs"
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE="docker-compose"
 else
-  docker-compose up -d
-  LOGS_CMD="docker-compose logs"
+  echo "Docker Compose wurde nicht gefunden."
+  exit 1
 fi
 
-echo "-> Warte auf den ersten Start..."
-sleep 2
+echo "-> Lade das aktuelle Container-Image ..."
+$COMPOSE pull
+
+echo "-> Starte Immich Album Sync ..."
+$COMPOSE up -d
 
 echo ""
 echo "================================================================"
-echo " Fertig! Login-Zugangsdaten (nur beim allerersten Start generiert):"
+echo " Fertig!"
 echo "================================================================"
-$LOGS_CMD 2>/dev/null | grep -A 3 "generated a login" || echo "(Login stand schon in einem früheren Lauf in data/credentials.json)"
-echo ""
-echo "Öffne jetzt http://localhost:3050 (oder deine Server-IP:3050) im"
-echo "Browser, logge dich ein und trage unter '⚙ Einstellungen' deine"
-echo "Immich-URL + API-Key ein."
+echo "Öffne jetzt http://localhost:3050 oder http://DEINE-SERVER-IP:3050."
+echo "Beim ersten Aufruf legst du Benutzername und Passwort selbst fest."
+echo "Danach richtest du in der Weboberfläche deine Immich-URL und den API-Key ein."

@@ -8,14 +8,13 @@ services:
       - "3050:3050"
 
     volumes:
-      # Persistiert Login-Zugangsdaten, Verschlüsselungs-Key,
+      # Persistiert Benutzerkonto, Verschlüsselungs-Key,
       # Immich-URL, API-Key und Sync-Verlauf.
       - immich-album-sync-data:/app/data
 
-    # Alles unten ist optional.
-    # Ohne diese Angaben generiert die App beim ersten Start automatisch
-    # Login-Daten und einen Verschlüsselungs-Key.
-    #
+    # Optional für Headless-/Legacy-Setups.
+    # Normalerweise NICHT nötig: Beim ersten Browser-Aufruf
+    # erscheint automatisch die Einrichtungsseite.
     # environment:
     #   APP_USERNAME: "theo"
     #   APP_PASSWORD: "bitte-ein-langes-zufaelliges-passwort-setzen"
