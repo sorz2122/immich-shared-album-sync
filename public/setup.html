@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Einrichtung · Immich Album Sync</title>
+  <link rel="icon" href="/immich-logo.svg" />
+  <meta name="theme-color" content="#08090c" />
+  <link rel="stylesheet" href="/auth.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <div class="brand">
+      <img src="/immich-logo.svg" alt="Immich" />
+      <h1>Immich Album Sync</h1>
+    </div>
+
+    <section class="panel">
+      <p class="eyebrow">Erster Start</p>
+      <h2>Administrator einrichten</h2>
+      <p class="lead">
+        Lege den Zugang für diese Installation fest. Danach wirst du direkt
+        angemeldet und kannst deine Immich-URL sowie den API-Key einrichten.
+      </p>
+
+      <form id="setupForm">
+        <label for="username">Benutzername</label>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          minlength="3"
+          maxlength="64"
+          autocomplete="username"
+          placeholder="z. B. theo"
+          required
+          autofocus
+        />
+
+        <label for="password">Passwort</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          minlength="12"
+          maxlength="256"
+          autocomplete="new-password"
+          placeholder="Mindestens 12 Zeichen"
+          required
+        />
+
+        <label for="confirmPassword">Passwort wiederholen</label>
+        <input
+          id="confirmPassword"
+          name="confirmPassword"
+          type="password"
+          minlength="12"
+          maxlength="256"
+          autocomplete="new-password"
+          placeholder="Passwort erneut eingeben"
+          required
+        />
+
+        <p class="hint">
+          Das Passwort wird nicht im Klartext gespeichert. Nach Abschluss kann
+          die Ersteinrichtung nicht erneut aufgerufen werden.
+        </p>
+
+        <button id="submitBtn" type="submit">Account erstellen</button>
+        <div id="status" class="status" role="alert" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <p class="footer-note">Die Zugangsdaten bleiben ausschließlich in deinem persistenten App-Datenverzeichnis.</p>
+  </main>
+
+  <script>
+    const form = document.getElementById('setupForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const status = document.getElementById('status');
+
+    function showError(message) {
+      status.className = 'status error';
+      status.textContent = message;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const confirmPassword = document.getElementById('confirmPassword').value;
+
+      if (password !== confirmPassword) {
+        showError('Die beiden Passwörter stimmen nicht überein.');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Account wird erstellt …';
+      status.className = 'status';
+      status.textContent = '';
+
+      try {
+        const response = await fetch('/api/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, confirmPassword }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Einrichtung fehlgeschlagen.');
+
+        status.className = 'status ok';
+        status.textContent = 'Account erstellt. Du wirst angemeldet …';
+        window.location.replace('/');
+      } catch (err) {
+        showError(err.message || 'Einrichtung fehlgeschlagen.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Account erstellen';
+      }
+    });
+  </script>
+</body>
+</html>

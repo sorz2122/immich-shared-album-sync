@@ -1,0 +1,193 @@
+:root {
+  --immich-red: #fa2921;
+  --immich-pink: #ed79b5;
+  --immich-yellow: #ffb400;
+  --immich-blue: #1e83f7;
+  --immich-green: #18c249;
+  --bg: #08090c;
+  --panel: rgba(255, 255, 255, 0.045);
+  --panel-border: rgba(255, 255, 255, 0.09);
+  --text: #eef0f4;
+  --muted: #8b93a3;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32px 16px;
+  position: relative;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(250, 41, 33, 0.16), transparent 35%),
+    radial-gradient(circle at 85% 15%, rgba(255, 180, 0, 0.14), transparent 35%),
+    radial-gradient(circle at 20% 85%, rgba(30, 131, 247, 0.16), transparent 35%),
+    radial-gradient(circle at 85% 80%, rgba(24, 194, 73, 0.14), transparent 35%),
+    radial-gradient(circle at 50% 50%, rgba(237, 121, 181, 0.08), transparent 45%);
+  filter: blur(60px);
+  pointer-events: none;
+}
+
+.auth-shell {
+  width: 100%;
+  max-width: 460px;
+  position: relative;
+  z-index: 1;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.brand img {
+  width: 46px;
+  height: 46px;
+  filter: drop-shadow(0 4px 18px rgba(250, 41, 33, 0.25));
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, var(--immich-red), var(--immich-pink) 35%, var(--immich-blue) 70%, var(--immich-green));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  padding: 28px;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--immich-blue);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.lead {
+  margin: 8px 0 24px;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 0.92rem;
+}
+
+label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 0 0 6px;
+  font-weight: 500;
+}
+
+input {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  margin-bottom: 18px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input::placeholder { color: #565d6b; }
+
+input:focus {
+  outline: none;
+  border-color: var(--immich-blue);
+  box-shadow: 0 0 0 3px rgba(30, 131, 247, 0.2);
+}
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: white;
+  cursor: pointer;
+  background: linear-gradient(90deg, var(--immich-red), var(--immich-pink) 36%, var(--immich-blue));
+  box-shadow: 0 10px 30px rgba(30, 131, 247, 0.18);
+  transition: transform 0.15s, opacity 0.15s;
+}
+
+button:hover:not(:disabled) { transform: translateY(-1px); }
+button:disabled { opacity: 0.55; cursor: wait; }
+
+.hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  margin: -8px 0 18px;
+}
+
+.status {
+  display: none;
+  margin-top: 16px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.status.error {
+  display: block;
+  color: #ff9a94;
+  background: rgba(250, 41, 33, 0.1);
+  border: 1px solid rgba(250, 41, 33, 0.3);
+}
+
+.status.ok {
+  display: block;
+  color: #70e6a7;
+  background: rgba(24, 194, 73, 0.1);
+  border: 1px solid rgba(24, 194, 73, 0.3);
+}
+
+.footer-note {
+  margin: 16px 6px 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-align: center;
+  line-height: 1.5;
+}
+
+@media (max-width: 520px) {
+  body { align-items: flex-start; padding-top: 24px; }
+  .panel { padding: 22px; }
+}

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Anmelden · Immich Album Sync</title>
+  <link rel="icon" href="/immich-logo.svg" />
+  <meta name="theme-color" content="#08090c" />
+  <link rel="stylesheet" href="/auth.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <div class="brand">
+      <img src="/immich-logo.svg" alt="Immich" />
+      <h1>Immich Album Sync</h1>
+    </div>
+
+    <section class="panel">
+      <p class="eyebrow">Willkommen zurück</p>
+      <h2>Anmelden</h2>
+      <p class="lead">Melde dich an, um deine Album-Synchronisierung zu verwalten.</p>
+
+      <form id="loginForm">
+        <label for="username">Benutzername</label>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          placeholder="Benutzername"
+          required
+          autofocus
+        />
+
+        <label for="password">Passwort</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Passwort"
+          required
+        />
+
+        <button id="submitBtn" type="submit">Anmelden</button>
+        <div id="status" class="status" role="alert" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <p class="footer-note">Self-hosted · Zugangsdaten bleiben auf deiner Installation.</p>
+  </main>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const status = document.getElementById('status');
+
+    function showError(message) {
+      status.className = 'status error';
+      status.textContent = message;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Anmeldung läuft …';
+      status.className = 'status';
+      status.textContent = '';
+
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value.trim(),
+            password: document.getElementById('password').value,
+          }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Anmeldung fehlgeschlagen.');
+
+        window.location.replace('/');
+      } catch (err) {
+        showError(err.message || 'Anmeldung fehlgeschlagen.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Anmelden';
+      }
+    });
+  </script>
+</body>
+</html>
